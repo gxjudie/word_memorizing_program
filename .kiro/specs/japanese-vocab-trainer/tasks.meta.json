@@ -1,0 +1,384 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Backend scaffolding and configuration": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502508
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839526256
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839744996
+      }
+    ],
+    "2.1 Implement SQLAlchemy ORM models": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502566
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839749638
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840011891
+      }
+    ],
+    "2.2 Configure Alembic and create the initial migration": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502600
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840016598
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840254974
+      }
+    ],
+    "3.1 Define domain and request/response schemas": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502632
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839751020
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840003783
+      }
+    ],
+    "3.2 Implement the LLM structured-output schema with validators": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502658
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839752405
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840005188
+      }
+    ],
+    "4.1 Implement `compute_next_interval`": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502684
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839753858
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840011181
+      }
+    ],
+    "5.1 Implement add/list with validation, dedupe, and due-today": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502714
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840017996
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840258015
+      }
+    ],
+    "6.1 Define the SentenceGenerationService interface and errors": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502738
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839755007
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840011426
+      }
+    ],
+    "6.2 Implement the validate/retry pipeline in the OpenAI adapter": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502764
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840019380
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840256546
+      }
+    ],
+    "7.1 Implement due selection and session start": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502790
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840291400
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840504493
+      }
+    ],
+    "7.2 Implement rating recording, scheduling, and transactional persistence": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502814
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840516140
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840755439
+      }
+    ],
+    "8.1 Implement password hashing and JWT": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502839
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840020574
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840259158
+      }
+    ],
+    "8.2 Implement API dependencies for current user, DB session, and service wiring": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502862
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840293703
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840505622
+      }
+    ],
+    "9.1 Implement auth routes": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502889
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840517529
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840752848
+      }
+    ],
+    "9.2 Implement word routes": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502910
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840518506
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840754292
+      }
+    ],
+    "9.3 Implement review routes": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502933
+      },
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840762115
+      }
+    ],
+    "10. Checkpoint - backend complete": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502956
+      }
+    ],
+    "11.1 Scaffold the Vite React + TypeScript app": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839502980
+      }
+    ],
+    "11.2 Implement the typed API client": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503005
+      }
+    ],
+    "12.1 Build the Add Word form": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503030
+      }
+    ],
+    "13.1 Render tokens with target emphasis and furigana toggle": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503055
+      }
+    ],
+    "14.1 Build the Lookup Panel": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503077
+      }
+    ],
+    "15.1 Build the Reveal + Rating controls": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503099
+      }
+    ],
+    "15.2 Build the Review Session view (orchestration)": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503122
+      }
+    ],
+    "16. Checkpoint - full stack wired": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790839503150
+      }
+    ],
+    "3. Pydantic schemas and the Difficulty enum": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840005231
+      }
+    ],
+    "4. Implement the pure Scheduler": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840011212
+      }
+    ],
+    "2. Data models and migrations": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840255020
+      }
+    ],
+    "6. Implement the Sentence Generation Service and OpenAI adapter": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840256586
+      }
+    ],
+    "5. Implement the Word Service": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840258047
+      }
+    ],
+    "8. Implement authentication and the LLM proxy wiring": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840505653
+      }
+    ],
+    "7. Implement the Review Service and session orchestration": [
+      {
+        "executionId": "5501750f-6367-429c-b5a9-cb464ad4f05f",
+        "chatSessionId": "sess_57f789f6-0aec-45fe-a0ad-9703f5c99c9f",
+        "timestamp": 1790840755469
+      }
+    ]
+  }
+}

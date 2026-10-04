@@ -20,10 +20,11 @@ def create_app() -> FastAPI:
 
     # Router registration. The review router is included here as the API layer
     # is built out in later tasks.
-    from app.api.routes import auth, words
+    from app.api.routes import auth, review, words
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(words.router, prefix="/api/words", tags=["words"])
+    app.include_router(review.router, prefix="/api/review", tags=["review"])
 
     return app
 

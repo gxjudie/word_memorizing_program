@@ -173,7 +173,7 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - Assert sentence routes require auth, the server-held key is injected server-side and never returned to the client
     - _Requirements: auth model, 4.1_
 
-- [ ] 9. Implement API routes (wire backend layers to HTTP)
+- [x] 9. Implement API routes (wire backend layers to HTTP)
   - [x] 9.1 Implement auth routes
     - Create `app/api/routes/auth.py` with `POST /api/auth/login` and `POST /api/auth/logout`; register the router in `app/main.py`
     - _Requirements: auth model_
@@ -182,7 +182,7 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - Create `app/api/routes/words.py` with `POST /api/words` (400 per-field errors, 409 duplicate) and `GET /api/words`; register the router
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
-  - [ ] 9.3 Implement review routes
+  - [x] 9.3 Implement review routes
     - Create `app/api/routes/review.py` with `POST /api/review/sessions` (due or no-due), `POST /api/review/sessions/:id/words/:wordId/sentence` (proxy generation, 3/4 handling, timeout/error → generation-error), `POST /api/review/sessions/:id/words/:wordId/rating` (reveal-gating 6.5, invalid-rating rejection 8.6, schedule + advance/summarize); register the router
     - _Requirements: 3.1, 3.5, 4.1, 4.2, 4.5, 4.6, 6.5, 7.4, 7.5, 8.1, 8.3, 8.4, 8.5, 8.6_
 
@@ -190,21 +190,21 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - Against a test database with a mocked provider: start session → generate sentence → reveal → rate → advance → summary; assert auth-protected access
     - _Requirements: 8.1, 8.2, 8.3, 8.4_
 
-- [ ] 10. Checkpoint - backend complete
+- [x] 10. Checkpoint - backend complete
   - Ensure all backend tests pass, ask the user if questions arise.
 
-- [ ] 11. Frontend scaffolding and typed API client
-  - [ ] 11.1 Scaffold the Vite React + TypeScript app
+- [x] 11. Frontend scaffolding and typed API client
+  - [x] 11.1 Scaffold the Vite React + TypeScript app
     - Create `frontend/` with Vite + React + TS, Tailwind (or CSS modules), `package.json`, `index.html`, and `src/{components,views,api}/`
     - _Requirements: frontend foundation_
 
-  - [ ] 11.2 Implement the typed API client
+  - [x] 11.2 Implement the typed API client
     - Create `src/api/` with typed client functions for auth, words, import, session start, sentence generation, and rating, including shared TypeScript types mirroring the backend schemas (tokens, GeneratedSentence, Difficulty)
     - Map `GenerationTimeout`/`GenerationError` responses to a generation-error state
     - _Requirements: 4.5, 4.6, backend API contract_
 
-- [ ] 12. Implement the Add Word view
-  - [ ] 12.1 Build the Add Word form
+- [x] 12. Implement the Add Word view
+  - [x] 12.1 Build the Add Word form
     - Create `src/views/AddWord` posting to `POST /api/words`, surfacing per-field validation errors (1.2, 1.3) and the duplicate error (1.4)
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
@@ -212,8 +212,8 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - Assert each named invalid field is highlighted and duplicate errors are shown
     - _Requirements: 1.2, 1.3, 1.4_
 
-- [ ] 13. Implement the Sentence Renderer
-  - [ ] 13.1 Render tokens with target emphasis and furigana toggle
+- [x] 13. Implement the Sentence Renderer
+  - [x] 13.1 Render tokens with target emphasis and furigana toggle
     - Create `src/components/SentenceRenderer`: each token is an interactive span; `isTarget` tokens get an emphasis style differing in at least one observable attribute (color/weight/background); a per-sentence "show furigana" toggle renders `reading` in parentheses
     - Render the "no example available" state when no sentence is present (3.5)
     - _Requirements: 3.1, 3.2, 3.5_
@@ -223,8 +223,8 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - **Validates: Requirements 3.2**
     - For generated token arrays, assert every `isTarget` token differs from non-target tokens in at least one observable attribute
 
-- [ ] 14. Implement the Lookup Panel
-  - [ ] 14.1 Build the Lookup Panel
+- [x] 14. Implement the Lookup Panel
+  - [x] 14.1 Build the Lookup Panel
     - Create `src/components/LookupPanel`: on selecting a non-target token show its meaning and reading (and furigana when `containsKanji`); replace content on new selection; show the unavailable message and clear prior content when meaning is None; persist until another selection or dismissal; wire selection from the Sentence Renderer
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
@@ -233,12 +233,12 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5**
     - For sequences of selections, assert the panel shows exactly the most recent token's content, clears on unavailable, and clears on dismissal
 
-- [ ] 15. Implement the Reveal + Rating controls and Review Session view
-  - [ ] 15.1 Build the Reveal + Rating controls
+- [x] 15. Implement the Reveal + Rating controls and Review Session view
+  - [x] 15.1 Build the Reveal + Rating controls
     - Create `src/components/RatingControls`: reveal shows the Target_Word reading + meaning; rating options appear only after reveal; offer exactly four ordered levels (very hard=1 .. very easy=4); selecting a level sends the rating and visually marks the selection; surface the "rating not saved" and "invalid rating" errors
     - _Requirements: 3.3, 3.4, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 8.6_
 
-  - [ ] 15.2 Build the Review Session view (orchestration)
+  - [x] 15.2 Build the Review Session view (orchestration)
     - Create `src/views/ReviewSession`: start the session (show "no words due" when empty), present one Target_Word at a time, request a sentence (with retry control on generation error), compose Sentence Renderer + Lookup Panel + Rating controls, advance on rating, and render the end-of-session summary (total reviewed + per-rating counts)
     - _Requirements: 4.5, 8.1, 8.2, 8.3, 8.4, 8.5_
 
@@ -249,7 +249,7 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - **Validates: Requirements 6.2, 6.4**
     - Assert meaning/rating are withheld pre-reveal and shown post-reveal, and exactly four ordered options are offered with selection marked
 
-- [ ] 16. Checkpoint - full stack wired
+- [x] 16. Checkpoint - full stack wired
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 17. (OPTIONAL) Implement Anki deck import

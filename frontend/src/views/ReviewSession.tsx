@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import LookupPanel from '../components/LookupPanel'
 import RatingControls from '../components/RatingControls'
 import SentenceRenderer from '../components/SentenceRenderer'
-import {
-  generateSentence,
-  rateWord,
-  revealWord,
-  startSession,
-} from '../api/endpoints'
+import GeminiKeySetup from './GeminiKeySetup'
+import { generateSentence, rateWord, revealWord, startSession } from '../api/endpoints'
 import {
   ApiError,
+  Difficulty,
   isNoDueWords,
-  type Difficulty,
+  type ApiErrorKind,
+  type GeminiKeyStatus,
   type GeneratedSentence,
   type RatingResult,
   type SentenceToken,
@@ -19,88 +17,142 @@ import {
   type WordEntryOut,
 } from '../api/types'
 
-type Phase = 'loading' | 'no-due' | 'reviewing' | 'complete' | 'error'
+type Phase = 'loading' | 'no-due' | 'reviewing' | 'complete' | 'error' | 'key-required'
+type GenerationIssue = { kind: ApiErrorKind; title: string; detail: string }
+type KeyDialog = { mode: 'setup' | 'replace' } | null
 
-/**
- * Review Session view — orchestrates the session loop (Req 8).
- *
- * Starts a session (showing "no words due" when empty, Req 8.5), presents one
- * Target_Word at a time (Req 8.2), requests a fresh sentence with a retry
- * control on generation error (Req 4.5), composes the Sentence Renderer +
- * Lookup Panel + Rating controls, advances on rating (Req 8.3), and renders the
- * end-of-session summary (Req 8.4).
- */
-export function ReviewSession() {
+const SUMMARY_LABELS: Record<string, string> = {
+  '1': '매우 어려움',
+  '2': '어려움',
+  '3': '기억남',
+  '4': '매우 쉬움',
+}
+
+const NOT_CONNECTED: GeminiKeyStatus = { connected: false, key_hint: null }
+
+/** Friendly Korean copy per sentence-generation failure (Req 4.5, 4.7–4.11). */
+function generationIssue(error: unknown): GenerationIssue {
+  const kind: ApiErrorKind = error instanceof ApiError ? error.code : 'unknown'
+  switch (kind) {
+    case 'gemini_key_required':
+      return {
+        kind,
+        title: 'Gemini API 키를 설정하세요',
+        detail: '예문을 만들려면 내 Gemini API 키가 필요해요. 키를 연결하면 이 단어의 예문을 바로 다시 만들어 드릴게요.',
+      }
+    case 'invalid_gemini_key':
+      return {
+        kind,
+        title: '연결된 Gemini API 키를 쓸 수 없어요',
+        detail: '키가 삭제되었거나 더 이상 유효하지 않아요. 새 키로 바꾸면 이 단어의 예문을 다시 만들어 드릴게요.',
+      }
+    case 'gemini_quota_exceeded':
+      return {
+        kind,
+        title: 'Gemini 사용량 한도에 도달했어요',
+        detail: '무료 등급은 분당·일일 사용량이 정해져 있어요. 1분쯤 기다렸다가 다시 시도해 보세요. 일일 한도라면 내일 다시 만들 수 있어요.',
+      }
+    case 'generation_timeout':
+      return {
+        kind,
+        title: '예문을 만드는 데 시간이 너무 걸렸어요',
+        detail: '응답이 늦어 이번 예문은 건너뛰었어요. 다시 시도해 주세요.',
+      }
+    default:
+      return {
+        kind,
+        title: '예문을 만들지 못했어요',
+        detail: '예문 생성 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.',
+      }
+  }
+}
+
+export interface ReviewSessionProps {
+  /** Keeps the header's key indicator in sync with key changes made here. */
+  onKeyStatusChange?: (status: GeminiKeyStatus) => void
+  /** "나중에" from the key guide: go add words instead (Req 10.2). */
+  onLater?: () => void
+}
+
+/** Orchestrate one-at-a-time due-word review without exposing provider tokens. */
+export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps = {}) {
   const [phase, setPhase] = useState<Phase>('loading')
+  const [keyDialog, setKeyDialog] = useState<KeyDialog>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [currentWord, setCurrentWord] = useState<WordEntryOut | null>(null)
   const [sentence, setSentence] = useState<GeneratedSentence | null>(null)
   const [sentenceLoading, setSentenceLoading] = useState(false)
-  const [generationError, setGenerationError] = useState<string | null>(null)
+  const [generationError, setGenerationError] = useState<GenerationIssue | null>(null)
   const [revealed, setRevealed] = useState(false)
+  const [selectedRating, setSelectedRating] = useState<Difficulty | null>(null)
   const [selectedToken, setSelectedToken] = useState<SentenceToken | null>(null)
   const [ratingError, setRatingError] = useState<string | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
   const [fatalError, setFatalError] = useState<string | null>(null)
+  const [progress, setProgress] = useState({ current: 1, total: 1 })
 
-  const loadSentence = useCallback(
-    async (sid: string, word: WordEntryOut) => {
-      setSentenceLoading(true)
-      setGenerationError(null)
-      setSentence(null)
-      try {
-        const gen = await generateSentence(sid, word.id)
-        setSentence(gen)
-      } catch (err) {
-        if (
-          err instanceof ApiError &&
-          (err.kind === 'generation_timeout' ||
-            err.kind === 'generation_failed')
-        ) {
-          // Keep the Target_Word in the session and offer retry (Req 4.5).
-          setGenerationError(err.message)
-        } else {
-          setGenerationError(
-            err instanceof ApiError ? err.message : 'Failed to load a sentence.',
-          )
-        }
-      } finally {
-        setSentenceLoading(false)
-      }
-    },
-    [],
-  )
+  // Keep the callback in a ref so a new parent closure never restarts the session.
+  const keyStatusListener = useRef(onKeyStatusChange)
+  keyStatusListener.current = onKeyStatusChange
+  const notifyKeyStatus = useCallback((status: GeminiKeyStatus) => {
+    keyStatusListener.current?.(status)
+  }, [])
 
-  const presentWord = useCallback(
-    (sid: string, word: WordEntryOut) => {
-      setCurrentWord(word)
-      setRevealed(false)
-      setSelectedToken(null)
-      setRatingError(null)
-      void loadSentence(sid, word)
-    },
-    [loadSentence],
-  )
+  const loadSentence = useCallback(async (sid: string, word: WordEntryOut) => {
+    setSentenceLoading(true)
+    setGenerationError(null)
+    setSentence(null)
+    try {
+      setSentence(await generateSentence(sid, word.id))
+    } catch (error) {
+      const issue = generationIssue(error)
+      if (issue.kind === 'gemini_key_required') notifyKeyStatus(NOT_CONNECTED)
+      setGenerationError(issue)
+    } finally {
+      setSentenceLoading(false)
+    }
+  }, [notifyKeyStatus])
+
+  const presentWord = useCallback((sid: string, word: WordEntryOut) => {
+    setCurrentWord(word)
+    setRevealed(false)
+    setSelectedRating(null)
+    setSelectedToken(null)
+    setRatingError(null)
+    void loadSentence(sid, word)
+  }, [loadSentence])
 
   const begin = useCallback(async () => {
     setPhase('loading')
     setFatalError(null)
+    setSummary(null)
     try {
-      const res = await startSession()
-      if (isNoDueWords(res)) {
+      const response = await startSession()
+      if (isNoDueWords(response)) {
         setPhase('no-due')
         return
       }
-      setSessionId(res.session_id)
+      setSessionId(response.session_id)
+      setProgress({ current: 1, total: response.due_words.length })
       setPhase('reviewing')
-      presentWord(res.session_id, res.due_words[0])
-    } catch (err) {
+      presentWord(response.session_id, response.due_words[0])
+    } catch (error) {
+      // No stored key: present the Key_Setup_Guide instead of a session (Req 10.1).
+      if (error instanceof ApiError && error.code === 'gemini_key_required') {
+        notifyKeyStatus(NOT_CONNECTED)
+        setPhase('key-required')
+        return
+      }
       setPhase('error')
-      setFatalError(
-        err instanceof ApiError ? err.message : 'Could not start a session.',
-      )
+      setFatalError(error instanceof ApiError ? error.message : '복습을 시작하지 못했어요.')
     }
-  }, [presentWord])
+  }, [presentWord, notifyKeyStatus])
+
+  /** A key was connected from the in-session dialog: retry the same word. */
+  function handleDialogConnected() {
+    setKeyDialog(null)
+    if (sessionId && currentWord) void loadSentence(sessionId, currentWord)
+  }
 
   useEffect(() => {
     void begin()
@@ -111,10 +163,8 @@ export function ReviewSession() {
     try {
       await revealWord(sessionId, currentWord.id)
       setRevealed(true)
-    } catch (err) {
-      setRatingError(
-        err instanceof ApiError ? err.message : 'Could not reveal the answer.',
-      )
+    } catch (error) {
+      setRatingError(error instanceof ApiError ? error.message : '정답을 불러오지 못했어요.')
     }
   }
 
@@ -123,135 +173,264 @@ export function ReviewSession() {
       setSummary(result.summary)
       setPhase('complete')
     } else if (result.next_word && sessionId) {
+      setProgress((value) => ({ ...value, current: value.current + 1 }))
       presentWord(sessionId, result.next_word)
     }
   }
 
   async function handleRate(rating: Difficulty) {
     if (!sessionId || !currentWord) return
+    setSelectedRating(rating)
     setRatingError(null)
     try {
-      const result = await rateWord(sessionId, currentWord.id, rating)
-      applyResult(result)
-    } catch (err) {
-      if (err instanceof ApiError && err.kind === 'scheduling_not_saved') {
-        setRatingError('Rating not saved. Please try again.')
-      } else if (err instanceof ApiError && err.kind === 'invalid_rating') {
-        setRatingError('That rating is not valid.')
-      } else if (err instanceof ApiError && err.kind === 'not_revealed') {
-        setRatingError('Reveal the answer before rating.')
+      applyResult(await rateWord(sessionId, currentWord.id, rating))
+    } catch (error) {
+      setSelectedRating(null)
+      if (error instanceof ApiError && error.kind === 'scheduling_not_saved') {
+        setRatingError('평가를 저장하지 못했어요. 다시 선택해 주세요.')
+      } else if (error instanceof ApiError && error.kind === 'invalid_rating') {
+        setRatingError('선택한 평가가 올바르지 않아요.')
+      } else if (error instanceof ApiError && error.kind === 'not_revealed') {
+        setRatingError('평가하기 전에 정답을 확인해 주세요.')
       } else {
-        setRatingError(
-          err instanceof ApiError ? err.message : 'Could not record the rating.',
-        )
+        setRatingError(error instanceof ApiError ? error.message : '평가를 기록하지 못했어요.')
       }
     }
   }
 
   if (phase === 'loading') {
-    return <p className="p-6 text-slate-500">Starting review session…</p>
+    return (
+      <div className="mx-auto grid min-h-[70vh] max-w-7xl place-items-center px-4">
+        <div className="text-center" data-testid="session-loading">
+          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-line border-t-vermilion" />
+          <p className="mt-4 font-medium text-ink-muted">오늘의 복습을 준비하고 있어요…</p>
+        </div>
+      </div>
+    )
   }
 
   if (phase === 'error') {
     return (
-      <div className="p-6">
-        <p className="text-rose-600" data-testid="session-error">
-          {fatalError}
-        </p>
-        <button
-          type="button"
-          onClick={() => void begin()}
-          className="mt-3 rounded bg-slate-800 px-4 py-2 text-white"
-        >
-          Try again
-        </button>
+      <div className="mx-auto grid min-h-[70vh] max-w-xl place-items-center px-4 py-12 text-center">
+        <section className="surface-card w-full p-8">
+          <span className="font-serif-jp text-4xl text-danger" aria-hidden="true">待</span>
+          <h2 className="mt-3 text-2xl font-bold">복습을 시작할 수 없어요</h2>
+          <p className="mt-2 text-ink-muted" data-testid="session-error">{fatalError}</p>
+          <button type="button" onClick={() => void begin()} className="mt-6 rounded-2xl bg-ink px-5 py-3 font-semibold text-white transition hover:bg-forest focus:outline-none focus:ring-4 focus:ring-forest/20">
+            다시 시도
+          </button>
+        </section>
+      </div>
+    )
+  }
+
+  if (phase === 'key-required') {
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12" data-testid="session-key-required">
+        <section className="mb-6 flex items-start gap-4 rounded-3xl border border-vermilion/15 bg-vermilion-soft/60 p-5 sm:p-6">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-white font-serif-jp text-2xl text-vermilion" aria-hidden="true">鍵</span>
+          <div>
+            <h2 className="text-xl font-bold tracking-tight sm:text-2xl">복습을 시작하려면 Gemini API 키가 필요해요</h2>
+            <p className="mt-2 text-sm leading-6 text-ink-muted">
+              예문은 내 무료 Gemini API 키로 만들어요. 아래 순서대로 키를 연결하면 바로 복습이 시작돼요.
+            </p>
+          </div>
+        </section>
+        <GeminiKeySetup
+          compact
+          status={NOT_CONNECTED}
+          onStatusChange={notifyKeyStatus}
+          onConnected={() => void begin()}
+          onLater={onLater}
+        />
       </div>
     )
   }
 
   if (phase === 'no-due') {
     return (
-      <p className="p-6 text-lg" data-testid="no-due">
-        No words are due for review today. 🎉
-      </p>
+      <div className="mx-auto grid min-h-[70vh] max-w-xl place-items-center px-4 py-12">
+        <section className="surface-card w-full p-8 text-center sm:p-12" data-testid="no-due">
+          <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-forest-soft font-serif-jp text-4xl text-forest" aria-hidden="true">休</div>
+          <h2 className="mt-6 text-2xl font-bold">오늘 복습은 모두 끝났어요</h2>
+          <p className="mt-3 leading-7 text-ink-muted">지금 복습할 단어가 없습니다.<br />새 단어를 추가하거나 다음 복습일에 다시 만나요.</p>
+        </section>
+      </div>
     )
   }
 
   if (phase === 'complete') {
     return (
-      <div className="p-6" data-testid="summary">
-        <h2 className="text-2xl font-bold">Session complete</h2>
-        <p className="mt-2">
-          Total reviewed:{' '}
-          <span data-testid="summary-total">{summary?.total_reviewed ?? 0}</span>
-        </p>
-        {summary && (
-          <ul className="mt-2 list-inside list-disc text-slate-700">
-            {Object.entries(summary.counts_by_rating).map(([level, count]) => (
-              <li key={level} data-testid={`summary-count-${level}`}>
-                Level {level}: {count}
-              </li>
-            ))}
-          </ul>
-        )}
-        <button
-          type="button"
-          onClick={() => void begin()}
-          className="mt-4 rounded bg-indigo-600 px-4 py-2 text-white"
-        >
-          Review again
-        </button>
+      <div className="mx-auto max-w-2xl px-4 py-10 sm:px-6 sm:py-16" data-testid="summary">
+        <section className="surface-card overflow-hidden text-center">
+          <div className="bg-forest px-6 py-10 text-white">
+            <span className="font-serif-jp text-5xl" aria-hidden="true">完</span>
+            <h2 className="mt-3 text-3xl font-bold">오늘의 복습 완료</h2>
+            <p className="mt-2 text-white/70">꾸준한 한 번이 오래 남는 기억을 만들어요.</p>
+          </div>
+          <div className="p-6 sm:p-8">
+            <p className="text-sm text-ink-muted">복습한 단어</p>
+            <p className="mt-1 text-5xl font-bold text-vermilion" data-testid="summary-total">{summary?.total_reviewed ?? 0}</p>
+            {summary && (
+              <ul className="mt-7 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {Object.entries(summary.counts_by_rating).map(([level, count]) => (
+                  <li key={level} data-testid={`summary-count-${level}`} className="rounded-2xl bg-washi p-3">
+                    <span className="block text-xs text-ink-faint">{SUMMARY_LABELS[level] ?? `단계 ${level}`}</span>
+                    <span className="mt-1 block text-xl font-bold text-ink">{count}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button type="button" onClick={() => void begin()} className="mt-8 rounded-2xl bg-vermilion px-6 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20">
+              복습 목록 다시 확인
+            </button>
+          </div>
+        </section>
       </div>
     )
   }
 
-  // phase === 'reviewing'
+  const progressPercent = Math.max(0, Math.min(100, (progress.current / progress.total) * 100))
+
   return (
-    <div className="mx-auto max-w-2xl p-6">
-      <div className="mb-4 rounded border border-slate-200 bg-white p-4 shadow-sm">
-        {sentenceLoading && (
-          <p className="text-slate-500" data-testid="sentence-loading">
-            Generating a sentence…
-          </p>
-        )}
-        {!sentenceLoading && generationError && (
-          <div data-testid="generation-error">
-            <p className="text-rose-600">{generationError}</p>
-            <button
-              type="button"
-              onClick={() =>
-                sessionId &&
-                currentWord &&
-                void loadSentence(sessionId, currentWord)
-              }
-              className="mt-2 rounded bg-slate-800 px-3 py-1.5 text-sm text-white"
-              data-testid="retry-generation"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-        {!sentenceLoading && !generationError && (
-          <SentenceRenderer
-            sentence={sentence}
-            onSelectToken={(token) => setSelectedToken(token)}
-          />
-        )}
+    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10 lg:px-8">
+      <div className="mb-5 flex items-end justify-between gap-4">
+        <div>
+          <p className="font-serif-jp text-sm font-semibold tracking-[0.18em] text-vermilion">今日の復習</p>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">문장에서 떠올리기</h2>
+        </div>
+        <div className="text-right">
+          <p className="text-sm font-semibold text-ink"><span className="text-vermilion">{progress.current}</span> / {progress.total}</p>
+          <p className="mt-0.5 text-xs text-ink-faint">오늘의 단어</p>
+        </div>
+      </div>
+      <div className="mb-6 h-1.5 overflow-hidden rounded-full bg-line/70" aria-label={`복습 진행률 ${progress.current}/${progress.total}`}>
+        <div className="h-full rounded-full bg-vermilion transition-all duration-500" style={{ width: `${progressPercent}%` }} />
       </div>
 
-      <LookupPanel
-        token={selectedToken}
-        onDismiss={() => setSelectedToken(null)}
-      />
+      <section className="surface-card min-h-[19rem] p-5 sm:p-8 lg:p-10">
+        {sentenceLoading && (
+          <div className="grid min-h-56 place-items-center text-center" data-testid="sentence-loading">
+            <div>
+              <div className="mx-auto flex w-fit gap-1.5" aria-hidden="true">
+                <span className="h-2 w-2 animate-bounce rounded-full bg-vermilion [animation-delay:-0.3s]" />
+                <span className="h-2 w-2 animate-bounce rounded-full bg-vermilion [animation-delay:-0.15s]" />
+                <span className="h-2 w-2 animate-bounce rounded-full bg-vermilion" />
+              </div>
+              <p className="mt-4 font-medium text-ink-muted">새로운 예문을 만들고 있어요…</p>
+              <p className="mt-1 text-xs text-ink-faint">복습할 때마다 다른 문장을 준비합니다.</p>
+            </div>
+          </div>
+        )}
+
+        {!sentenceLoading && generationError && (
+          <div className="grid min-h-56 place-items-center text-center" data-testid="generation-error">
+            <div className="max-w-lg">
+              <div
+                className={`mx-auto grid h-14 w-14 place-items-center rounded-full font-serif-jp text-2xl ${
+                  generationError.kind === 'gemini_quota_exceeded'
+                    ? 'bg-[#f5eddd] text-gold'
+                    : generationError.kind === 'gemini_key_required' || generationError.kind === 'invalid_gemini_key'
+                      ? 'bg-vermilion-soft text-vermilion'
+                      : 'bg-danger-soft text-danger'
+                }`}
+                aria-hidden="true"
+              >
+                {generationError.kind === 'gemini_quota_exceeded'
+                  ? '限'
+                  : generationError.kind === 'gemini_key_required' || generationError.kind === 'invalid_gemini_key'
+                    ? '鍵'
+                    : '！'}
+              </div>
+              <h3 className="mt-4 text-xl font-bold">{generationError.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-ink-muted">{generationError.detail}</p>
+              {generationError.kind === 'gemini_key_required' ? (
+                <button
+                  type="button"
+                  onClick={() => setKeyDialog({ mode: 'setup' })}
+                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20"
+                  data-testid="open-key-setup"
+                >
+                  키 연결 가이드 열기
+                </button>
+              ) : generationError.kind === 'invalid_gemini_key' ? (
+                <button
+                  type="button"
+                  onClick={() => setKeyDialog({ mode: 'replace' })}
+                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20"
+                  data-testid="replace-key"
+                >
+                  새 키로 바꾸기
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => sessionId && currentWord && void loadSentence(sessionId, currentWord)}
+                  className="mt-5 rounded-2xl bg-ink px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-forest focus:outline-none focus:ring-4 focus:ring-forest/20"
+                  data-testid="retry-generation"
+                >
+                  {generationError.kind === 'gemini_quota_exceeded' ? '다시 시도' : '예문 다시 만들기'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!sentenceLoading && !generationError && (
+          <SentenceRenderer sentence={sentence} onSelectToken={setSelectedToken} />
+        )}
+      </section>
+
+      <div className="mt-3">
+        <LookupPanel token={selectedToken} onDismiss={() => setSelectedToken(null)} />
+      </div>
 
       {currentWord && (
         <RatingControls
           word={currentWord}
           revealed={revealed}
+          selectedRating={selectedRating}
           onReveal={() => void handleReveal()}
-          onRate={(r) => void handleRate(r)}
+          onRate={(rating) => void handleRate(rating)}
           errorMessage={ratingError}
         />
+      )}
+
+      {keyDialog && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-6 backdrop-blur-sm sm:py-12">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="key-dialog-title"
+            className="w-full max-w-2xl rounded-[2rem] bg-washi p-5 shadow-card sm:p-7"
+            data-testid="key-dialog"
+          >
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <p className="font-serif-jp text-sm font-semibold tracking-[0.18em] text-vermilion">鍵の設定</p>
+                <h2 id="key-dialog-title" className="mt-1 text-2xl font-bold tracking-tight">
+                  {keyDialog.mode === 'replace' ? '새 Gemini API 키로 바꾸기' : 'Gemini API 키 연결하기'}
+                </h2>
+                <p className="mt-1 text-sm text-ink-muted">연결이 끝나면 지금 단어의 예문을 바로 다시 만들어요.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setKeyDialog(null)}
+                aria-label="닫기"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-muted transition hover:bg-white hover:text-ink focus:outline-none focus:ring-4 focus:ring-forest/15"
+              >
+                ✕
+              </button>
+            </div>
+            <GeminiKeySetup
+              compact
+              mode={keyDialog.mode}
+              status={keyDialog.mode === 'setup' ? NOT_CONNECTED : undefined}
+              onStatusChange={notifyKeyStatus}
+              onConnected={handleDialogConnected}
+            />
+          </div>
+        </div>
       )}
     </div>
   )

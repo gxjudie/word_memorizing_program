@@ -1,27 +1,19 @@
-"""Sentence Generation Service interface and error types.
+"""Provider-agnostic sentence-generation contract and failure types.
 
-This module defines the provider-agnostic contract for producing an
-Example_Sentence that contains a Target_Word (Req 4). Concrete adapters (e.g.
-the OpenAI adapter in ``openai_adapter.py``) implement
-:class:`SentenceGenerationService`; the backend holds the provider key
-server-side and proxies calls on the Learner's behalf.
+Sentence generation uses each Learner's own Gemini_API_Key (BYOK). Concrete
+adapters receive an :class:`ApiKeyProvider` and call it with the ``user_id``
+passed to :meth:`SentenceGenerationService.generate` once per generation
+request. There is no developer-held key (Requirement 10.16).
 
-The two exception types model the two terminal failure modes of the
-validate/retry pipeline described in the design:
-
-* :class:`GenerationTimeout` - the provider did not return a sentence within
-  the time budget (Req 4.2, 4.5).
-* :class:`GenerationError` - generation exhausted its retry budget without
-  producing a valid sentence that contains the Target_Word (Req 4.1, 4.6).
-
-Both are mapped by the frontend to the generation-error message, which retains
-the Target_Word in the session and offers a retry control (Req 4.5).
+Every exception defined here carries a fixed, key-free message by default
+(Requirement 10.13). Callers must never build a message from provider output
+or from the key itself.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 if TYPE_CHECKING:
     from app.models.word_entry import WordEntry
@@ -29,68 +21,113 @@ if TYPE_CHECKING:
 
 
 class SentenceGenerationError(Exception):
-    """Base class for all sentence-generation failures.
+    """Base class for generation failures. Messages never contain a key.
 
-    Catching this base type lets callers handle any generation failure
-    uniformly while still being able to distinguish the specific subclasses
-    (:class:`GenerationTimeout` vs :class:`GenerationError`) when needed.
+    Each subclass defines a fixed ``default_message`` that is used when the
+    exception is raised without arguments.
     """
+
+    default_message: ClassVar[str] = "Sentence generation failed."
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message if message is not None else self.default_message)
+
+
+class MissingGeminiKeyError(SentenceGenerationError):
+    """The Learner has no stored Gemini_API_Key; no Gemini request is sent.
+
+    Requirements 4.7 and 10.15. The Target_Word stays in the session.
+    """
+
+    default_message: ClassVar[str] = "No Gemini API key is connected."
+
+
+class InvalidGeminiKeyError(SentenceGenerationError):
+    """Gemini rejected the key (400 API_KEY_INVALID, 401, 403 PERMISSION_DENIED).
+
+    Requirement 4.9. The request stops with no further attempts.
+    """
+
+    default_message: ClassVar[str] = "The Gemini API key was rejected."
+
+
+class QuotaExceededError(SentenceGenerationError):
+    """Gemini returned 429 / RESOURCE_EXHAUSTED for the Learner's key.
+
+    Requirement 4.8. The request stops with no further attempts.
+    """
+
+    default_message: ClassVar[str] = "The Gemini API quota is exhausted."
 
 
 class GenerationTimeout(SentenceGenerationError):
-    """Raised when generation does not complete within the time budget.
+    """An attempt exceeded its five-second time budget (Requirements 4.2, 4.5)."""
 
-    Satisfies Req 4.2 / 4.5: the provider call must produce an Example_Sentence
-    within 5 seconds; otherwise the System surfaces a generation-error message,
-    retains the Target_Word in the current Review_Session, and offers a retry
-    control.
-    """
+    default_message: ClassVar[str] = "Sentence generation timed out."
 
 
 class GenerationError(SentenceGenerationError):
-    """Raised when generation fails to produce a valid sentence.
+    """The retry budget was exhausted by discarded outputs or transient errors.
 
-    Satisfies Req 4.1 / 4.6: if the provider cannot produce a schema-valid
-    Example_Sentence that contains the Target_Word within the retry budget (up
-    to 3 retries), generation gives up and raises this error.
+    Requirements 4.6, 4.10, and 4.11.
     """
+
+    default_message: ClassVar[str] = "Could not generate a valid sentence."
+
+
+class ApiKeyProvider(Protocol):
+    """Returns the Learner's decrypted Gemini_API_Key for server-side use only.
+
+    Bound to ``GeminiKeyService.get_api_key`` and injected into the Gemini
+    adapter. Raises :class:`MissingGeminiKeyError` when no key is stored.
+    """
+
+    def __call__(self, user_id: str) -> str:
+        """Return the stored key for ``user_id``."""
+        ...
 
 
 class SentenceGenerationService(ABC):
-    """Provider-agnostic interface for generating an Example_Sentence.
-
-    Implementations encapsulate the provider call, structured-output parsing,
-    schema re-validation, target-presence enforcement, difference-from-previous
-    enforcement, and the retry/timeout policy. Keeping this an abstract base
-    class lets the provider be swapped and lets tests inject a mock without a
-    real network call.
-    """
+    """Provider-agnostic interface for producing an Example_Sentence."""
 
     @abstractmethod
     async def generate(
-        self, target: "WordEntry", previous: "GeneratedSentence | None"
+        self,
+        user_id: str,
+        target: "WordEntry",
+        previous: "GeneratedSentence | None",
     ) -> "GeneratedSentence":
-        """Produce an Example_Sentence containing ``target``.
+        """Produce a validated Example_Sentence containing ``target``.
 
         Args:
-            target: The Word_Entry under review; the produced sentence must
-                contain its word form in surface or dictionary form (Req 4.1).
+            user_id: The signed-in Learner whose key the injected
+                :class:`ApiKeyProvider` supplies (once per request).
+            target: The Word_Entry under review (Requirement 4.1).
             previous: The immediately preceding generated sentence for this
-                word, or ``None`` on the first review. When provided, the new
-                sentence must differ from it by at least one non-target word
-                (Req 4.3).
+                word, or ``None`` on its first review (Requirement 4.3).
 
         Returns:
-            A validated :class:`GeneratedSentence` with 1-50 word tokens
-            (Req 4.4) that contains the Target_Word.
+            A validated Example_Sentence containing the Target_Word.
 
         Raises:
-            GenerationTimeout: If generation does not complete within the time
-                budget (Req 4.2, 4.5).
-            GenerationError: If generation exhausts its retry budget without
-                producing a valid, target-containing sentence (Req 4.1, 4.6).
-
-        The method is ``async`` to suit the slow provider call without blocking
-        the event loop.
+            MissingGeminiKeyError: No key is stored (Requirement 4.7).
+            QuotaExceededError: Gemini quota exhausted (Requirement 4.8).
+            InvalidGeminiKeyError: Gemini rejected the key (Requirement 4.9).
+            GenerationTimeout: An attempt exceeded five seconds
+                (Requirements 4.2, 4.5).
+            GenerationError: The retry budget was exhausted
+                (Requirements 4.10, 4.11).
         """
         ...
+
+
+__all__ = [
+    "ApiKeyProvider",
+    "GenerationError",
+    "GenerationTimeout",
+    "InvalidGeminiKeyError",
+    "MissingGeminiKeyError",
+    "QuotaExceededError",
+    "SentenceGenerationError",
+    "SentenceGenerationService",
+]

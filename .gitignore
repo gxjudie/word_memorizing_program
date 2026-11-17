@@ -19,3 +19,16 @@ build/
 
 # Logs
 *.log
+
+# Secret backups and local auth artifacts
+.env.*
+!.env.example
+.ext_agent_host_id
+# Local databases
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
+# Stray lockfiles (only frontend/package-lock.json is tracked)
+backend/package-lock.json
+.kiro/specs/**/package-lock.json

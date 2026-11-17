@@ -49,7 +49,11 @@ def db_session() -> Iterator[Session]:
 @pytest.fixture()
 def test_user(db_session: Session) -> User:
     """Create and persist a Learner to own the collection."""
-    user = User(email="learner@example.com", password_hash="x")
+    user = User(
+        email="learner@example.com",
+        oidc_issuer="https://accounts.google.com",
+        oidc_subject="learner@example.com",
+    )
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)

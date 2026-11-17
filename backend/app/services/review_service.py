@@ -40,6 +40,7 @@ that reveal-gating (Req 6.5), advance (Req 8.3), and the summary (Req 8.4) need.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -56,6 +57,7 @@ from app.schemas.review import (
     SessionSummary,
 )
 from app.schemas.word import WordEntryOut
+from app.services.sentence_generation.base import MissingGeminiKeyError
 from app.services.scheduler import (
     EASE_FLOOR,
     ReviewHistoryRecord,
@@ -271,9 +273,23 @@ class ReviewService:
     # shared/external store without changing the public interface.
     _sessions: dict[str, SessionState] = {}
 
-    def __init__(self, db: Session) -> None:
-        """Store the SQLAlchemy session used for queries and scheduling writes."""
+    def __init__(
+        self,
+        db: Session,
+        *,
+        has_gemini_key: Callable[[str], bool] | None = None,
+    ) -> None:
+        """Store the DB session and the optional Gemini key-presence check.
+
+        Args:
+            db: SQLAlchemy session used for queries and scheduling writes.
+            has_gemini_key: Returns whether a Learner has a stored
+                Gemini_API_Key. The API wiring binds it to the Learner's
+                ``gemini_credentials`` row; session start uses it before due
+                selection (Req 10.1). ``None`` means no check is made.
+        """
         self._db = db
+        self._has_gemini_key = has_gemini_key
 
     def start_session(
         self,
@@ -297,7 +313,17 @@ class ReviewService:
         Returns:
             A ``ReviewSessionOut`` carrying the new ``session_id`` and the due
             words in presentation order, or ``NoDueWords`` when nothing is due.
+
+        Raises:
+            MissingGeminiKeyError: If a key-presence check is configured and
+                the Learner has no stored Gemini_API_Key. Checked before due
+                selection, so no session is created (Req 10.1).
         """
+        # Key presence is checked first: without a key the Learner is sent to
+        # the Key_Setup_Guide instead of starting a session (Req 10.1).
+        if self._has_gemini_key is not None and not self._has_gemini_key(user_id):
+            raise MissingGeminiKeyError()
+
         due_words = list(
             self._db.execute(
                 select(WordEntry)

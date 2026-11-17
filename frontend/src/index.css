@@ -1,3 +1,47 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    color: #25312e;
+    background: #f7f4ee;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  html {
+    min-width: 320px;
+    background: #f7f4ee;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background:
+      radial-gradient(circle at 90% 4%, rgba(215, 107, 77, 0.07), transparent 26rem),
+      #f7f4ee;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+
+  ::selection {
+    color: #25312e;
+    background: #f2cabc;
+  }
+}
+
+@layer components {
+  .focus-ring {
+    @apply focus:outline-none focus:ring-4 focus:ring-forest/15 focus:border-forest;
+  }
+
+  .surface-card {
+    @apply rounded-3xl border border-line/80 bg-paper shadow-soft;
+  }
+}

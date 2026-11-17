@@ -8,6 +8,7 @@ the ``SessionSummary`` when the final word has been rated (Req 8.3, 8.4).
 """
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,3 +79,23 @@ class RatingResult(BaseModel):
     session_complete: bool = False
     next_word: WordEntryOut | None = None
     summary: SessionSummary | None = None
+
+class SentenceGenerationErrorDetail(BaseModel):
+    """Stable, client-safe ``{code, message}`` for review-route Gemini failures.
+
+    ``gemini_key_required`` is also returned by session start (Req 10.1).
+    Messages are fixed strings and never contain a Gemini_API_Key.
+    """
+    code: Literal[
+        "gemini_key_required",
+        "invalid_gemini_key",
+        "gemini_quota_exceeded",
+        "generation_timeout",
+        "generation_failed",
+    ]
+    message: str
+
+
+class SentenceGenerationErrorResponse(BaseModel):
+    """FastAPI error envelope for typed generation failures."""
+    detail: SentenceGenerationErrorDetail

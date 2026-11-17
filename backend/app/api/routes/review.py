@@ -8,19 +8,22 @@ the design). Every route requires an authenticated Learner.
 
 Endpoints (see the design API table):
 
-* ``POST /api/review/sessions`` — start a session over the Learner's Due_Words,
-  returning the due list or a no-due marker (Req 8.1, 8.5).
+* ``POST /api/review/sessions`` — ``409 gemini_key_required`` when the Learner
+  has no stored Gemini_API_Key (checked first, Req 10.1); otherwise start a
+  session over the Learner's Due_Words, returning the due list or a no-due
+  marker (Req 8.1, 8.5).
 * ``POST /api/review/sessions/{id}/words/{wordId}/reveal`` — mark the current
   Target_Word revealed; the reveal-before-rate gate (Req 6.5).
-* ``POST /api/review/sessions/{id}/words/{wordId}/sentence`` — proxy a fresh
-  Example_Sentence from the LLM, re-validated server-side, persisting it and
-  returning it; generation timeout/exhaustion map to a generation-error
-  response so the client can retain the word and offer retry (Req 4.5, 4.6).
+* ``POST /api/review/sessions/{id}/words/{wordId}/sentence`` — generate a fresh
+  Example_Sentence through Gemini with the Learner's own key, re-validated
+  server-side, persist it, and return it. Gemini BYOK failures map to typed
+  ``{code, message}`` errors (see ``_GENERATION_ERRORS``); the Target_Word
+  stays unrated in the session (Req 4.5, 4.7-4.11).
 * ``POST /api/review/sessions/{id}/words/{wordId}/rating`` — record a rating,
   schedule, persist transactionally, and advance or summarize (Req 6, 7, 8).
 
-The LLM key is held server-side by the sentence service and never reaches the
-client.
+The Learner's Gemini_API_Key is decrypted and attached server-side by the
+sentence service and never reaches the client (Req 10.12, 10.16).
 """
 
 from __future__ import annotations
@@ -35,7 +38,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import CurrentUser, DbSession, get_review_service, get_sentence_service
 from app.models.generated_sentence import GeneratedSentence as GeneratedSentenceORM
 from app.models.word_entry import WordEntry
-from app.schemas.review import NoDueWords, RatingInput, RatingResult, ReviewSessionOut
+from app.schemas.review import (
+    NoDueWords,
+    RatingInput,
+    RatingResult,
+    ReviewSessionOut,
+    SentenceGenerationErrorDetail,
+    SentenceGenerationErrorResponse,
+)
 from app.schemas.sentence import GeneratedSentence as GeneratedSentenceSchema
 from app.services.review_service import (
     InvalidRatingError,
@@ -48,12 +58,62 @@ from app.services.review_service import (
 from app.services.sentence_generation.base import (
     GenerationError,
     GenerationTimeout,
+    InvalidGeminiKeyError,
+    MissingGeminiKeyError,
+    QuotaExceededError,
+    SentenceGenerationError,
     SentenceGenerationService,
 )
 
 __all__ = ["router"]
 
 router = APIRouter()
+
+
+# Gemini BYOK failure -> (HTTP status, code, fixed key-free message). The
+# message is never built from the exception or provider output (Req 10.13).
+_GENERATION_ERRORS: dict[type[SentenceGenerationError], tuple[int, str, str]] = {
+    MissingGeminiKeyError: (
+        status.HTTP_409_CONFLICT,
+        "gemini_key_required",
+        "Set up a Gemini API key to generate example sentences.",
+    ),
+    InvalidGeminiKeyError: (
+        422,
+        "invalid_gemini_key",
+        "Your Gemini API key is invalid or revoked. Replace it to continue.",
+    ),
+    QuotaExceededError: (
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "gemini_quota_exceeded",
+        "Your Gemini API quota is exhausted. Wait and retry later.",
+    ),
+    GenerationTimeout: (
+        status.HTTP_502_BAD_GATEWAY,
+        "generation_timeout",
+        "Sentence generation timed out. Please retry.",
+    ),
+    GenerationError: (
+        status.HTTP_502_BAD_GATEWAY,
+        "generation_failed",
+        "Could not generate a sentence. Please retry.",
+    ),
+}
+
+
+def _generation_http_error(exc: SentenceGenerationError) -> HTTPException:
+    """Map a generation failure to its typed ``{code, message}`` HTTP error.
+
+    An unmapped ``SentenceGenerationError`` subclass falls back to
+    ``generation_failed`` so no provider detail can reach the client.
+    """
+    for exc_type, (status_code, code, message) in _GENERATION_ERRORS.items():
+        if isinstance(exc, exc_type):
+            break
+    else:
+        status_code, code, message = _GENERATION_ERRORS[GenerationError]
+    detail = SentenceGenerationErrorDetail(code=code, message=message)
+    return HTTPException(status_code=status_code, detail=detail.model_dump())
 
 
 class RevealResponse(BaseModel):
@@ -65,19 +125,29 @@ class RevealResponse(BaseModel):
 @router.post(
     "/sessions",
     response_model=ReviewSessionOut | NoDueWords,
+    responses={
+        status.HTTP_409_CONFLICT: {
+            "model": SentenceGenerationErrorResponse,
+            "description": "No Gemini API key is stored (gemini_key_required)",
+        },
+    },
     summary="Start a review session",
 )
 def start_session(
     user: CurrentUser,
     service: ReviewService = Depends(get_review_service),
 ) -> ReviewSessionOut | NoDueWords:
-    """Start a Review_Session over the Learner's Due_Words (Req 8.1, 8.5).
+    """Start a Review_Session over the Learner's Due_Words (Req 10.1, 8.1, 8.5).
 
-    Returns the due words to review, or a :class:`NoDueWords` marker (still
-    ``200``) when nothing is due so the client can show the "no words due"
-    state.
+    Without a stored Gemini_API_Key the session is not started and the route
+    returns ``409 gemini_key_required`` so the client opens the
+    Key_Setup_Guide (Req 10.1). Otherwise it returns the due words to review,
+    or a :class:`NoDueWords` marker (still ``200``) when nothing is due.
     """
-    return service.start_session(user.id, date.today())
+    try:
+        return service.start_session(user.id, date.today())
+    except MissingGeminiKeyError as exc:
+        raise _generation_http_error(exc) from None
 
 
 @router.post(
@@ -133,6 +203,24 @@ def _latest_previous_sentence(
 @router.post(
     "/sessions/{session_id}/words/{word_id}/sentence",
     response_model=GeneratedSentenceSchema,
+    responses={
+        status.HTTP_409_CONFLICT: {
+            "model": SentenceGenerationErrorResponse,
+            "description": "No Gemini API key is stored (gemini_key_required)",
+        },
+        422: {
+            "model": SentenceGenerationErrorResponse,
+            "description": "Gemini rejected the stored key (invalid_gemini_key)",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "model": SentenceGenerationErrorResponse,
+            "description": "Gemini quota exhausted (gemini_quota_exceeded)",
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "model": SentenceGenerationErrorResponse,
+            "description": "Sentence generation failed or timed out",
+        },
+    },
     summary="Generate an example sentence for the current word",
 )
 async def generate_sentence(
@@ -143,17 +231,19 @@ async def generate_sentence(
     service: ReviewService = Depends(get_review_service),
     sentence_service: SentenceGenerationService = Depends(get_sentence_service),
 ) -> GeneratedSentenceSchema:
-    """Proxy a fresh Example_Sentence for the current word (Req 3, 4).
+    """Generate a fresh Example_Sentence for the current word (Req 3, 4).
 
     Loads the word (scoped to the Learner), supplies the immediately-preceding
-    sentence for the difference check (Req 4.3), calls the LLM proxy, persists
-    the validated result, and returns it. A generation timeout or exhausted
-    retry budget maps to a ``502`` generation-error response so the client
-    retains the word and offers a retry control (Req 4.5, 4.6).
+    sentence for the difference check (Req 4.3), calls Gemini with the
+    Learner's own key, persists the validated result, and returns it.
 
     Raises:
         HTTPException: ``404`` if the session or word is unknown/not owned;
-            ``502`` with a stable error code on generation timeout/failure.
+            otherwise a ``{code, message}`` error: ``409 gemini_key_required``
+            (4.7), ``422 invalid_gemini_key`` (4.9), ``429
+            gemini_quota_exceeded`` (4.8), ``502 generation_timeout`` (4.5),
+            or ``502 generation_failed`` (4.10, 4.11). Nothing is persisted
+            and the Target_Word stays current and unrated.
     """
     # Confirm the session exists (surface a 404 rather than a vague error).
     try:
@@ -176,23 +266,10 @@ async def generate_sentence(
     previous = _latest_previous_sentence(db, word_id)
 
     try:
-        generated = await sentence_service.generate(word, previous)
-    except GenerationTimeout as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "generation_timeout",
-                "message": "Sentence generation timed out. Please retry.",
-            },
-        ) from exc
-    except GenerationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "generation_failed",
-                "message": "Could not generate a sentence. Please retry.",
-            },
-        ) from exc
+        generated = await sentence_service.generate(user.id, word, previous)
+    except SentenceGenerationError as exc:
+        # The session cursor is untouched, so the word stays current/unrated.
+        raise _generation_http_error(exc) from None
 
     # Persist the validated sentence (tokens stored as JSON).
     row = GeneratedSentenceORM(

@@ -4,7 +4,7 @@ Wired to the application's SQLAlchemy metadata and configuration:
 
 * ``target_metadata`` is ``app.db.session.Base.metadata``. Importing
   ``app.models`` registers every ORM model on that metadata so autogenerate
-  and ``create_all`` see all four tables.
+  and ``create_all`` see all five tables.
 * The database URL is read from the application ``Settings`` (``DB_URL``)
   rather than the static ``sqlalchemy.url`` in ``alembic.ini`` so migrations
   target the same database the app uses.

@@ -44,7 +44,11 @@ def db() -> Session:
 
 
 def _make_user(db: Session, email: str = "learner@example.com") -> User:
-    user = User(email=email, password_hash="x")
+    user = User(
+        email=email,
+        oidc_issuer="https://accounts.google.com",
+        oidc_subject=email,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)

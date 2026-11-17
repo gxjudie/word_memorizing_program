@@ -7,12 +7,12 @@ FastAPI + Python backend for the Japanese Vocabulary Trainer.
 ```
 app/
   main.py                # FastAPI app factory + router registration
-  config.py              # Pydantic BaseSettings (DB_URL, OPENAI_API_KEY, JWT_SECRET)
-  api/routes/            # HTTP layer only (auth, words, review)
+  config.py              # DB, Google OAuth/OIDC, app-session, token-encryption, Gemini model settings
+  api/routes/            # HTTP layer only (auth, words, review, gemini_key)
   schemas/               # Pydantic request/response + LLM sentence schema
   models/                # SQLAlchemy ORM tables
   services/              # business logic (word, review, scheduler, sentence generation)
-  auth/                  # password hashing + JWT
+  auth/                  # OAuth/PKCE, OIDC validation, and first-party app sessions
   db/session.py          # SQLAlchemy engine / session factory
 tests/
   properties/            # Hypothesis property tests

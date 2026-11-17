@@ -24,10 +24,27 @@ def upgrade() -> None:
     op.create_table('users',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('email', sa.String(length=320), nullable=False),
-    sa.Column('password_hash', sa.String(length=255), nullable=True),
+    sa.Column('name', sa.String(length=255), nullable=True),
+    sa.Column('oidc_issuer', sa.String(length=2048), nullable=False),
+    sa.Column('oidc_client_id', sa.String(length=255), nullable=False),
+    sa.Column('oidc_subject', sa.String(length=255), nullable=False),
     sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('email')
+    sa.UniqueConstraint('oidc_issuer', 'oidc_client_id', 'oidc_subject', name='uq_user_oidc_subject')
+    )
+    op.create_table('oauth_credentials',
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('user_id', sa.String(length=36), nullable=False),
+    sa.Column('access_token_encrypted', sa.Text(), nullable=False),
+    sa.Column('refresh_token_encrypted', sa.Text(), nullable=False),
+    sa.Column('access_token_expires_at', sa.DateTime(), nullable=False),
+    sa.Column('granted_scopes', sa.JSON(), nullable=False),
+    sa.Column('client_id', sa.String(length=255), nullable=False),
+    sa.Column('ext_agent_host_id', sa.String(length=255), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_id')
     )
     op.create_table('word_entries',
     sa.Column('id', sa.String(length=36), nullable=False),
@@ -71,5 +88,6 @@ def downgrade() -> None:
     op.drop_table('review_records')
     op.drop_table('generated_sentences')
     op.drop_table('word_entries')
+    op.drop_table('oauth_credentials')
     op.drop_table('users')
     # ### end Alembic commands ###

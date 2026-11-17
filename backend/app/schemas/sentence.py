@@ -65,6 +65,51 @@ class GeneratedSentenceSchema(BaseModel):
         return tokens
 
 
+# Gemini ``responseSchema`` (OpenAPI subset) mirroring GeneratedSentenceSchema.
+# Sent as ``generationConfig.responseSchema`` with
+# ``responseMimeType = "application/json"``. Gemini output is still
+# re-validated with GeneratedSentenceSchema, so this schema only shapes the
+# model's output. A unit test keeps the field names and required sets of the
+# two schemas in sync.
+GEMINI_RESPONSE_SCHEMA: dict = {
+    "type": "OBJECT",
+    "properties": {
+        "text": {"type": "STRING"},
+        "tokens": {
+            "type": "ARRAY",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "surface": {"type": "STRING"},
+                    "reading": {"type": "STRING"},
+                    "meaning": {"type": "STRING", "nullable": True},
+                    "is_target": {"type": "BOOLEAN"},
+                    "contains_kanji": {"type": "BOOLEAN"},
+                },
+                "required": [
+                    "surface",
+                    "reading",
+                    "meaning",
+                    "is_target",
+                    "contains_kanji",
+                ],
+                "propertyOrdering": [
+                    "surface",
+                    "reading",
+                    "meaning",
+                    "is_target",
+                    "contains_kanji",
+                ],
+            },
+        },
+    },
+    "required": ["text", "tokens"],
+    "propertyOrdering": ["text", "tokens"],
+}
+
+
 # Domain-model aliases used by the services layer. Services depend on the
 # names ``SentenceToken`` / ``GeneratedSentence`` so that the schema class
 # names can evolve independently of their call sites.
@@ -76,4 +121,5 @@ __all__ = [
     "GeneratedSentenceSchema",
     "SentenceToken",
     "GeneratedSentence",
+    "GEMINI_RESPONSE_SCHEMA",
 ]

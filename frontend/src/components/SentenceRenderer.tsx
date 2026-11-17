@@ -2,74 +2,67 @@ import { useState } from 'react'
 import type { GeneratedSentence, SentenceToken } from '../api/types'
 
 export interface SentenceRendererProps {
-  /** The generated sentence to render, or null when none is available. */
   sentence: GeneratedSentence | null
-  /** Called when a non-target token is clicked (drives the Lookup Panel). */
   onSelectToken?: (token: SentenceToken, index: number) => void
 }
 
-/**
- * Renders an Example_Sentence from its structured token array (Req 3).
- *
- * Each token is an interactive span. Target tokens (`is_target`) get an
- * emphasis style that differs from non-target tokens in at least one
- * observable attribute — color, weight, and background (Req 3.2). A per-sentence
- * "show furigana" toggle renders each token's reading in parentheses (Req 3.1).
- * When no sentence is present, the "no example available" state is shown (3.5).
- */
-export function SentenceRenderer({
-  sentence,
-  onSelectToken,
-}: SentenceRendererProps) {
+/** Render a tokenized sentence with target emphasis and optional readings. */
+export function SentenceRenderer({ sentence, onSelectToken }: SentenceRendererProps) {
   const [showFurigana, setShowFurigana] = useState(false)
 
   if (sentence === null) {
     return (
-      <p className="text-slate-500 italic" data-testid="no-example">
-        No example sentence available.
-      </p>
+      <div className="grid min-h-48 place-items-center text-center" data-testid="no-example">
+        <div>
+          <span className="font-serif-jp text-3xl text-ink-faint" aria-hidden="true">文</span>
+          <p className="mt-2 font-medium text-ink-muted">표시할 예문이 없어요.</p>
+          <p className="mt-1 text-sm text-ink-faint">단어를 먼저 확인한 뒤 복습을 이어가세요.</p>
+        </div>
+      </div>
     )
   }
 
   return (
     <div>
-      <div className="mb-2 flex justify-end">
-        <label className="flex items-center gap-2 text-sm text-slate-600">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold tracking-[0.17em] text-vermilion">CONTEXT</p>
+          <p className="mt-1 text-sm text-ink-muted">강조된 단어의 뜻을 문맥에서 떠올려 보세요.</p>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2.5 rounded-full border border-line bg-washi px-3 py-2 text-sm font-medium text-ink-muted transition hover:border-forest/30">
           <input
             type="checkbox"
             checked={showFurigana}
-            onChange={(e) => setShowFurigana(e.target.checked)}
+            onChange={(event) => setShowFurigana(event.target.checked)}
             aria-label="Show furigana"
+            className="peer sr-only"
           />
-          Show furigana
+          <span className="relative h-5 w-9 rounded-full bg-line transition peer-checked:bg-forest peer-focus-visible:ring-4 peer-focus-visible:ring-forest/20 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition after:content-[''] peer-checked:after:translate-x-4" aria-hidden="true" />
+          후리가나
         </label>
       </div>
-      <p className="text-2xl leading-relaxed" data-testid="sentence">
+
+      <p className="font-serif-jp text-[1.75rem] leading-[2.1] tracking-wide text-ink sm:text-4xl sm:leading-[2]" data-testid="sentence" lang="ja">
         {sentence.tokens.map((token, index) => {
           const isTarget = token.is_target
-          // Target emphasis differs in color, weight, AND background (Req 3.2).
           const className = isTarget
-            ? 'text-rose-700 font-bold bg-rose-100 rounded px-0.5'
-            : 'text-slate-900 font-normal bg-transparent hover:bg-slate-100 cursor-pointer rounded px-0.5'
+            ? 'relative mx-0.5 rounded-lg bg-vermilion-soft px-1.5 py-1 font-bold text-vermilion shadow-[inset_0_-2px_0_rgba(215,107,77,0.28)]'
+            : 'mx-0.5 cursor-pointer rounded-lg bg-transparent px-1 py-1 font-normal text-ink transition hover:bg-forest-soft hover:text-forest focus:outline-none focus:ring-4 focus:ring-forest/15'
           return (
             <span
-              key={index}
+              key={`${token.surface}-${index}`}
               data-testid={`token-${index}`}
               data-is-target={isTarget}
               className={className}
               role={isTarget ? undefined : 'button'}
               tabIndex={isTarget ? undefined : 0}
-              onClick={
-                isTarget
-                  ? undefined
-                  : () => onSelectToken?.(token, index)
-              }
+              onClick={isTarget ? undefined : () => onSelectToken?.(token, index)}
               onKeyDown={
                 isTarget
                   ? undefined
-                  : (e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
+                  : (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
                         onSelectToken?.(token, index)
                       }
                     }
@@ -77,13 +70,18 @@ export function SentenceRenderer({
             >
               {token.surface}
               {showFurigana && (
-                <span className="text-sm text-slate-500">
+                <span className="ml-0.5 align-middle font-sans text-xs font-medium tracking-normal text-ink-faint sm:text-sm">
                   ({token.reading})
                 </span>
               )}
             </span>
           )
         })}
+      </p>
+
+      <p className="mt-7 flex items-center gap-2 border-t border-line/70 pt-4 text-xs text-ink-faint">
+        <span className="grid h-5 w-5 place-items-center rounded-full bg-forest-soft text-forest" aria-hidden="true">?</span>
+        모르는 단어를 누르면 읽기와 뜻을 확인할 수 있어요.
       </p>
     </div>
   )

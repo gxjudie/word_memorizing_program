@@ -31,7 +31,11 @@ def db() -> Session:
 
 
 def _make_user(db: Session, email: str = "learner@example.com") -> User:
-    user = User(email=email, password_hash="x")
+    user = User(
+        email=email,
+        oidc_issuer="https://accounts.google.com",
+        oidc_subject=email,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -154,3 +158,40 @@ def test_start_session_registers_tracked_state(db: Session):
     assert state.revealed is False  # not yet revealed (Req 6.5 gate)
     assert state.is_complete is False
     assert state.rated_word_ids == set()
+
+
+def test_start_session_without_gemini_key_raises_before_due_selection(db: Session):
+    """No stored key -> MissingGeminiKeyError and no session registered (Req 10.1)."""
+    from app.services.sentence_generation.base import MissingGeminiKeyError
+
+    user = _make_user(db)
+    today = date(2024, 1, 15)
+    _add_word(db, user.id, "今日", today)
+    checked: list[str] = []
+
+    def has_key(user_id: str) -> bool:
+        checked.append(user_id)
+        return False
+
+    service = ReviewService(db, has_gemini_key=has_key)
+    before = dict(ReviewService._sessions)
+
+    with pytest.raises(MissingGeminiKeyError):
+        service.start_session(user.id, today)
+
+    assert checked == [user.id]
+    assert ReviewService._sessions == before
+
+
+def test_start_session_with_gemini_key_selects_due_words(db: Session):
+    """With a stored key, session start proceeds to due selection (Req 10.1, 8.1)."""
+    user = _make_user(db)
+    today = date(2024, 1, 15)
+    word = _add_word(db, user.id, "今日", today)
+
+    result = ReviewService(db, has_gemini_key=lambda _uid: True).start_session(
+        user.id, today
+    )
+
+    assert isinstance(result, ReviewSessionOut)
+    assert [w.id for w in result.due_words] == [word.id]

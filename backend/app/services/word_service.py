@@ -20,9 +20,10 @@ is testable without a web server (see the layer separation in the design).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from app.models.word_entry import WordEntry
@@ -98,17 +99,66 @@ class WordService:
         if existing is not None:
             raise DuplicateError(data.word_form)
 
-        entry = WordEntry(
-            user_id=user_id,
-            word_form=data.word_form,
-            reading=data.reading,
-            meaning=data.meaning,
-            next_review_date=creation_date,  # due immediately (Req 1.5)
-        )
+        entry = WordEntry(**self._entry_values(user_id, data, creation_date))
         self._db.add(entry)
         self._db.commit()
         self._db.refresh(entry)
         return entry
+
+    def existing_word_forms(self, user_id: str) -> set[str]:
+        """Return every word form in a Learner's collection (Req 2.29).
+
+        The read runs in the session's current transaction, so the Anki import
+        dedupes against the same snapshot it later inserts into.
+        """
+        return set(
+            self._db.execute(
+                select(WordEntry.word_form).where(WordEntry.user_id == user_id)
+            ).scalars()
+        )
+
+    def add_words_bulk(
+        self,
+        user_id: str,
+        inputs: Sequence[WordInput],
+        today: date,
+        chunk_size: int = 1000,
+    ) -> int:
+        """Insert many new Word_Entries without committing (Req 2.26, 2.30-2.32).
+
+        Rows are inserted with bulk ``INSERT`` statements of at most
+        ``chunk_size`` rows each. The caller owns the transaction: it commits
+        once after every chunk succeeded, or rolls back so that none of the
+        rows remain (Req 2.31). Dedupe is the caller's job; a word form that
+        already exists raises ``IntegrityError`` from the unique constraint.
+
+        Returns:
+            The number of rows inserted.
+        """
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be at least 1")
+        rows = [self._entry_values(user_id, data, today) for data in inputs]
+        for start in range(0, len(rows), chunk_size):
+            self._db.execute(insert(WordEntry), rows[start : start + chunk_size])
+        return len(rows)
+
+    @staticmethod
+    def _entry_values(user_id: str, data: WordInput, today: date) -> dict[str, object]:
+        """Column values of a new Word_Entry, due on ``today`` (Req 1.5, 2.26).
+
+        Every new word starts with the default scheduling state and no review
+        history, whether added by hand or imported (Req 2.30).
+        """
+        return {
+            "user_id": user_id,
+            "word_form": data.word_form,
+            "reading": data.reading,
+            "meaning": data.meaning,
+            "next_review_date": today,  # due immediately
+            "ease_factor": 2.5,
+            "interval_days": 0,
+            "repetitions": 0,
+        }
 
     def list_collection(self, user_id: str) -> list[WordEntry]:
         """Return all Word_Entries belonging to a Learner.

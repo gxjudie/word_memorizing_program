@@ -8,6 +8,7 @@ import {
   type ImportErrorCode,
   type KeyStorageErrorCode,
   type SentenceErrorCode,
+  type StudySettingsErrorCode,
 } from './types'
 
 // This key stores only the App_Session issued by our backend after Google
@@ -63,8 +64,11 @@ const CODED_ERRORS: ReadonlySet<string> = new Set<
   | KeyStorageErrorCode
   | AuthErrorCode
   | ImportErrorCode
+  | StudySettingsErrorCode
   | 'logout_failed'
 >([
+  // Study settings (Req 11.5); without this a coded 422 falls to invalid_rating
+  'invalid_study_settings',
   // Anki deck import (Req 2.2, 2.3, 2.9, 2.11, 2.22, 2.31, 2.36, 2.41, 2.42)
   'unsupported_colpkg',
   'file_too_large',

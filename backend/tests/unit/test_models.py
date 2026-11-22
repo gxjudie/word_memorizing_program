@@ -5,13 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401 — register all models on Base.metadata
 from app.db.session import Base
 from app.models import GeminiCredential, RevokedAppSession, User, WordEntry
+from app.models.user import (
+    DEFAULT_NEW_WORD_LIMIT,
+    DEFAULT_REVIEW_WORD_LIMIT,
+    STUDY_LIMIT_MAX,
+    STUDY_LIMIT_MIN,
+)
 
 GOOGLE_ISSUER = "https://accounts.google.com"
 
@@ -76,6 +82,37 @@ def test_same_google_identity_cannot_create_two_accounts(db: Session) -> None:
     db.add(make_user(subject="subject-2", email="first@example.com"))
     db.commit()
     assert len(db.scalars(select(User)).all()) == 2
+
+
+def test_new_user_reads_default_study_settings(db: Session) -> None:
+    """A new user row reads New_Word_Limit 50 and Review_Word_Limit 100 (Req 11.1, 11.2)."""
+    columns = User.__table__.c
+    assert columns.new_word_limit.nullable is False
+    assert columns.review_word_limit.nullable is False
+    assert (DEFAULT_NEW_WORD_LIMIT, DEFAULT_REVIEW_WORD_LIMIT) == (50, 100)
+    assert (STUDY_LIMIT_MIN, STUDY_LIMIT_MAX) == (0, 1000)
+
+    user = make_user()
+    db.add(user)
+    db.commit()
+    db.expire_all()
+
+    stored = db.get(User, user.id)
+    assert stored is not None
+    assert (stored.new_word_limit, stored.review_word_limit) == (50, 100)
+
+    # The server default covers raw inserts that bypass the ORM default.
+    db.execute(
+        text(
+            "INSERT INTO users (id, email, oidc_issuer, oidc_subject) "
+            "VALUES ('raw-user', 'raw@example.com', :issuer, 'subject-raw')"
+        ),
+        {"issuer": GOOGLE_ISSUER},
+    )
+    db.commit()
+    raw = db.get(User, "raw-user")
+    assert raw is not None
+    assert (raw.new_word_limit, raw.review_word_limit) == (50, 100)
 
 
 def test_oauth_credential_model_is_removed() -> None:

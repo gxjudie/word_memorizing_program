@@ -77,8 +77,11 @@ GEMINI_RESPONSE_SCHEMA: dict = {
         "text": {"type": "STRING"},
         "tokens": {
             "type": "ARRAY",
-            "minItems": 1,
-            "maxItems": 50,
+            # Array length limits (1-50) are intentionally omitted here: Gemini's
+            # structured-output engine rejects minItems/maxItems on this nested
+            # array (HTTP 400 INVALID_ARGUMENT, "too many states for serving").
+            # The 1-50 bound is enforced in Pydantic by GeneratedSentenceSchema,
+            # which re-validates every Gemini response after the call.
             "items": {
                 "type": "OBJECT",
                 "properties": {

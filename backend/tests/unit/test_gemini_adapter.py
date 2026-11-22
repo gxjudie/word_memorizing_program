@@ -26,6 +26,7 @@ from app.services.sentence_generation.base import (
 )
 from app.services.sentence_generation.gemini_adapter import (
     GEMINI_API_BASE_URL,
+    SYSTEM_INSTRUCTION,
     GeminiAdapter,
 )
 
@@ -159,7 +160,7 @@ def test_missing_key_sends_no_request() -> None:
 
 def test_key_provider_called_once_per_request_across_retries() -> None:
     calls: list[str] = []
-    recorder = Recorder([httpx.Response(500), _ok("not json"), _ok(_sentence())])
+    recorder = Recorder([httpx.Response(500), _ok(_sentence())])
 
     def key_provider(user_id: str) -> str:
         calls.append(user_id)
@@ -168,7 +169,7 @@ def test_key_provider_called_once_per_request_across_retries() -> None:
     _run(_adapter(recorder, key_provider=key_provider))
 
     assert calls == ["learner-1"]
-    assert len(recorder.requests) == 3
+    assert len(recorder.requests) == 2
 
 
 @pytest.mark.parametrize(
@@ -205,25 +206,51 @@ def test_more_than_fifty_tokens_is_discarded() -> None:
     assert len(recorder.requests) == 2
 
 
-def test_sentence_without_new_non_target_word_is_discarded() -> None:
+def test_sentence_identical_to_previous_after_trim_is_discarded() -> None:
     previous = GeneratedSentenceSchema.model_validate(_sentence("毎日"))
-    recorder = Recorder([_ok(_sentence("毎日")), _ok(_sentence("今日"))])
+    padded = _sentence("毎日")
+    padded["text"] = " \u3000" + padded["text"] + "\n"
+    recorder = Recorder([_ok(padded), _ok(_sentence("今日"))])
 
     result = _run(_adapter(recorder), previous)
 
-    assert result.tokens[0].surface == "今日"
+    assert result.text == "今日勉強する。"
     assert len(recorder.requests) == 2
 
 
-def test_budget_exhausted_after_four_requests_raises_generation_error() -> None:
-    recorder = Recorder(
-        [_ok("bad"), httpx.Response(503), httpx.ConnectError("down"), _ok("bad")]
-    )
+def test_sentence_differing_by_one_character_is_accepted() -> None:
+    previous = GeneratedSentenceSchema.model_validate(_sentence("毎日"))
+    candidate = _sentence("毎日")
+    candidate["text"] = "毎日勉強する！"  # same tokens, last character differs
+    recorder = Recorder([_ok(candidate)])
+
+    result = _run(_adapter(recorder), previous)
+
+    assert result.text == "毎日勉強する！"
+    assert len(recorder.requests) == 1
+
+
+def test_any_sentence_is_accepted_when_there_is_no_previous() -> None:
+    recorder = Recorder([_ok(_sentence("毎日"))])
+
+    result = _run(_adapter(recorder), None)
+
+    assert result.text == "毎日勉強する。"
+    assert len(recorder.requests) == 1
+
+
+def test_system_instruction_asks_for_korean_meanings() -> None:
+    assert "Korean" in SYSTEM_INSTRUCTION
+    assert "English" not in SYSTEM_INSTRUCTION
+
+
+def test_budget_exhausted_after_two_requests_raises_generation_error() -> None:
+    recorder = Recorder([_ok("bad"), httpx.Response(503)])
 
     with pytest.raises(GenerationError) as exc_info:
         _run(_adapter(recorder))
 
-    assert len(recorder.requests) == 4
+    assert len(recorder.requests) == 2
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__suppress_context__
 
@@ -285,7 +312,7 @@ def test_key_never_appears_in_errors_or_logs(caplog: pytest.LogCaptureFixture) -
     outcomes = [
         [_rpc_error(429, "RESOURCE_EXHAUSTED")],
         [_rpc_error(400, "INVALID_ARGUMENT", "API_KEY_INVALID")],
-        [httpx.ConnectError(f"boom {API_KEY}")] * 4,
+        [httpx.ConnectError(f"boom {API_KEY}")] * 2,
     ]
     for responses in outcomes:
         with pytest.raises(Exception) as exc_info:

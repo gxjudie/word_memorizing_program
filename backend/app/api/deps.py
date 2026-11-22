@@ -40,6 +40,7 @@ from app.services.gemini_key_service import GeminiKeyService
 from app.services.review_service import ReviewService
 from app.services.sentence_generation.base import SentenceGenerationService
 from app.services.sentence_generation.gemini_adapter import GeminiAdapter
+from app.services.study_settings_service import StudySettingsService
 from app.services.word_service import WordService
 
 __all__ = [
@@ -55,11 +56,13 @@ __all__ = [
     "get_anki_import_service",
     "get_review_service",
     "get_sentence_service",
+    "get_study_settings_service",
     "DbSession",
     "SettingsDep",
     "CurrentUser",
     "AuthServiceDep",
     "GeminiKeyServiceDep",
+    "StudySettingsServiceDep",
     "KEY_STORAGE_UNAVAILABLE",
 ]
 
@@ -238,3 +241,16 @@ def get_sentence_service(
         http_client=http_client,
         model=settings.gemini_model,
     )
+
+
+def get_study_settings_service(db: DbSession) -> StudySettingsService:
+    """Provide a StudySettingsService bound to the request's database session.
+
+    Study settings need an App_Session but no Gemini key (Req 11.8, 11.9).
+    """
+    return StudySettingsService(db)
+
+
+StudySettingsServiceDep = Annotated[
+    StudySettingsService, Depends(get_study_settings_service)
+]

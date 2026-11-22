@@ -48,6 +48,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.review_record import ReviewRecord
+from app.models.user import (
+    DEFAULT_NEW_WORD_LIMIT,
+    DEFAULT_REVIEW_WORD_LIMIT,
+    User,
+)
 from app.models.word_entry import WordEntry
 from app.schemas.difficulty import Difficulty
 from app.schemas.review import (
@@ -294,63 +299,107 @@ class ReviewService:
     def start_session(
         self,
         user_id: str,
-        today: date,
+        day: date,
     ) -> ReviewSessionOut | NoDueWords:
-        """Start a Review_Session over the Learner's Due_Words (Req 8.1, 8.2, 8.5).
+        """Start a capped, review-first Review_Session (Req 8.1, 8.2, 8.5, 11).
 
-        Due_Words are the Learner's ``WordEntry`` rows whose ``next_review_date``
-        is on or before ``today`` (Req 8.1). When none are due, no session is
-        created and a ``NoDueWords`` marker is returned (Req 8.5). Otherwise a
-        session is registered and the due words are returned in a stable
-        presentation order (oldest-created first) so they can be shown one at a
-        time (Req 8.2).
+        Selection uses the Learner's Study_Settings from the ``User`` row
+        (``review_word_limit`` and ``new_word_limit``; the defaults when the row
+        is missing, which only happens in direct service calls):
+
+        1. Review_Words: words with at least one ``ReviewRecord`` and
+           ``next_review_date <= day``, ordered by
+           ``(next_review_date, created_at, id)`` and limited to
+           ``review_word_limit``. Skipped when that limit is 0 (Req 11.7).
+        2. New_Words: words with no ``ReviewRecord``, whatever their
+           ``next_review_date``, ordered by ``(created_at, id)`` and limited to
+           ``new_word_limit``. Skipped when that limit is 0 (Req 11.6).
+
+        The session presents the Review_Words first, then the New_Words
+        (Req 8.1, 8.2). The two groups use ``EXISTS`` and ``NOT EXISTS`` on the
+        same correlated subquery, so they are disjoint and no id repeats. An
+        empty selection returns ``NoDueWords`` and registers no session
+        (Req 8.5).
 
         Args:
             user_id: The Learner starting the session.
-            today: The current date; the base date for due selection and (in
-                task 7.2) scheduling. Injected for testability.
+            day: The current Study_Day; the base date for due selection and
+                for scheduling (``session_date``). Injected for testability.
 
         Returns:
-            A ``ReviewSessionOut`` carrying the new ``session_id`` and the due
-            words in presentation order, or ``NoDueWords`` when nothing is due.
+            A ``ReviewSessionOut`` carrying the new ``session_id`` and the
+            selected words in presentation order, or ``NoDueWords`` when the
+            selection is empty.
 
         Raises:
             MissingGeminiKeyError: If a key-presence check is configured and
-                the Learner has no stored Gemini_API_Key. Checked before due
-                selection, so no session is created (Req 10.1).
+                the Learner has no stored Gemini_API_Key. Checked before any
+                query, so no session is created (Req 10.1).
         """
-        # Key presence is checked first: without a key the Learner is sent to
-        # the Key_Setup_Guide instead of starting a session (Req 10.1).
         if self._has_gemini_key is not None and not self._has_gemini_key(user_id):
-            raise MissingGeminiKeyError()
+            raise MissingGeminiKeyError()  # Req 10.1, before any query
 
-        due_words = list(
-            self._db.execute(
-                select(WordEntry)
-                .where(
-                    WordEntry.user_id == user_id,
-                    WordEntry.next_review_date <= today,
-                )
-                .order_by(WordEntry.created_at, WordEntry.id)
-            ).scalars()
+        user = self._db.get(User, user_id)
+        review_limit = (
+            user.review_word_limit if user is not None else DEFAULT_REVIEW_WORD_LIMIT
+        )
+        new_limit = user.new_word_limit if user is not None else DEFAULT_NEW_WORD_LIMIT
+
+        # Correlated EXISTS: does this WordEntry have any ReviewRecord?
+        has_review = (
+            select(ReviewRecord.id)
+            .where(ReviewRecord.word_id == WordEntry.id)
+            .exists()
         )
 
-        # No Due_Words: do not start a session (Req 8.5).
-        if not due_words:
+        review_words: list[WordEntry] = []
+        if review_limit > 0:  # Req 11.7
+            review_words = list(
+                self._db.execute(
+                    select(WordEntry)
+                    .where(
+                        WordEntry.user_id == user_id,
+                        has_review,
+                        WordEntry.next_review_date <= day,  # Due_Word on the Study_Day
+                    )
+                    .order_by(
+                        WordEntry.next_review_date,
+                        WordEntry.created_at,
+                        WordEntry.id,
+                    )
+                    .limit(review_limit)
+                ).scalars()
+            )
+
+        new_words: list[WordEntry] = []
+        if new_limit > 0:  # Req 11.6
+            new_words = list(
+                self._db.execute(
+                    select(WordEntry)
+                    .where(WordEntry.user_id == user_id, ~has_review)  # any date
+                    .order_by(WordEntry.created_at, WordEntry.id)
+                    .limit(new_limit)
+                ).scalars()
+            )
+
+        words = review_words + new_words  # reviews first (Req 8.1, 8.2)
+
+        # Empty selection: do not start a session (Req 8.5).
+        if not words:
             return NoDueWords()
 
         session_id = str(uuid.uuid4())
         state = SessionState(
             session_id=session_id,
             user_id=user_id,
-            session_date=today,
-            word_ids=[word.id for word in due_words],
+            session_date=day,
+            word_ids=[word.id for word in words],
         )
         self._sessions[session_id] = state
 
         return ReviewSessionOut(
             session_id=session_id,
-            due_words=[WordEntryOut.model_validate(word) for word in due_words],
+            due_words=[WordEntryOut.model_validate(word) for word in words],
         )
 
     def _get_session(self, session_id: str) -> SessionState:

@@ -45,6 +45,7 @@ from app.services.anki_import.mapping import FieldMapping, suggest_mapping, vali
 from app.services.anki_import.models import FileKind
 from app.services.anki_import.preview_store import PreviewRecord, PreviewStore
 from app.services.anki_import.text_reader import parse_anki_text, text_export_to_deck
+from app.services.study_day import current_study_day
 from app.services.word_service import WordService
 
 if TYPE_CHECKING:
@@ -161,7 +162,7 @@ class AnkiImportService:
         db: Session,
         store: PreviewStore,
         words: WordService,
-        today: Callable[[], date] = date.today,
+        today: Callable[[], date] = current_study_day,
     ) -> None:
         self._db = db
         self._store = store

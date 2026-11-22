@@ -3,12 +3,13 @@ import AddWord from './views/AddWord'
 import GeminiKeySetup, { maskedHint } from './views/GeminiKeySetup'
 import Login from './views/Login'
 import ReviewSession from './views/ReviewSession'
+import StudySettings from './views/StudySettings'
 import { getSessionToken, onSignedOut } from './api/client'
 import { getMe, logout } from './api/endpoints'
 import type { GeminiKeyStatus, Me } from './api/types'
 
 type Tab = 'add' | 'review'
-type View = Tab | 'key'
+type View = Tab | 'key' | 'settings'
 
 const NAV_ITEMS: { id: Tab; label: string; eyebrow: string }[] = [
   { id: 'review', label: '오늘의 복습', eyebrow: '復習' },
@@ -156,6 +157,22 @@ export default function App() {
               <span className="hidden font-mono text-xs font-medium xl:inline" aria-hidden="true">{keyLabel}</span>
             </button>
 
+            <button
+              type="button"
+              onClick={() => setView('settings')}
+              aria-current={view === 'settings' ? 'page' : undefined}
+              aria-label="학습 설정"
+              title="학습 설정"
+              data-testid="header-settings-entry"
+              className={
+                'flex items-center gap-2 rounded-xl border px-2.5 py-2 text-sm font-semibold transition focus:outline-none focus:ring-4 focus:ring-forest/15 sm:px-3 ' +
+                (view === 'settings' ? 'border-forest/30 bg-forest-soft text-forest' : 'border-line/80 bg-white/70 text-ink-muted hover:text-ink')
+              }
+            >
+              <span className="font-serif-jp" aria-hidden="true">設</span>
+              <span className="hidden lg:inline">학습 설정</span>
+            </button>
+
             {learnerName && (
               <span className="hidden max-w-[12rem] truncate text-sm text-ink-muted lg:inline" title={me?.email} data-testid="header-learner">
                 {learnerName}
@@ -196,6 +213,8 @@ export default function App() {
             onLater={() => setView('add')}
             onContinue={() => setView('review')}
           />
+        ) : view === 'settings' ? (
+          <StudySettings />
         ) : view === 'review' ? (
           <ReviewSession onKeyStatusChange={handleKeyStatusChange} onLater={() => setView('add')} />
         ) : (

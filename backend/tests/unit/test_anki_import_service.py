@@ -370,6 +370,25 @@ def test_confirm_imports_and_reports_the_summary(
         service.confirm(user.id, preview.preview_id, _confirm_body())
 
 
+def test_confirm_without_injected_today_uses_the_current_study_day(
+    db: Session,
+    user: User,
+    store: PreviewStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 06:30 KST on 3 June is still the 2 June Study_Day (Req 2.26).
+    monkeypatch.setattr(
+        "app.services.study_day._utc_now",
+        lambda: datetime(2025, 6, 2, 21, 30, tzinfo=UTC),
+    )
+    service = AnkiImportService(db, store, WordService(db))
+    preview = _text_preview(service, user, tmp_path, [["猫", "ねこ", "cat"]])
+
+    assert service.confirm(user.id, preview.preview_id, _confirm_body()).created == 1
+    assert [r[4] for r in _rows(db, user.id)] == [date(2025, 6, 2)]
+
+
 def test_confirm_rejects_an_invalid_mapping_and_keeps_the_preview(
     db: Session, user: User, store: PreviewStore, tmp_path: Path
 ) -> None:

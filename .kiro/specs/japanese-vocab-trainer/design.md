@@ -2,15 +2,16 @@
 
 ## Overview
 
-The Japanese Vocabulary Trainer is a **web application** that helps a Learner memorize Japanese vocabulary in context. During a Review_Session the app presents each Due_Word embedded in a freshly generated Japanese Example_Sentence, with the Target_Word visually emphasized. The Learner reveals the answer, self-rates recall on four Difficulty_Rating levels, and a spaced-repetition Scheduler (an SM-2 / Anki-style scheme) computes the next review date.
+The Japanese Vocabulary Trainer is a **web application** that helps a Learner memorize Japanese vocabulary in context. During a Review_Session the app presents each selected word (due Review_Words first, then New_Words, each group capped by the Learner's Study_Settings) embedded in a freshly generated Japanese Example_Sentence, with the Target_Word visually emphasized. The Learner reveals the answer, self-rates recall on four Difficulty_Rating levels, and a spaced-repetition Scheduler (an SM-2 / Anki-style scheme) computes the next review date.
 
-Three design pressures shape the architecture:
+Four design pressures shape the architecture:
 
-1. **Fresh sentence per review (Requirement 4).** Example_Sentences are produced by an LLM, abstracted behind a **Sentence Generation Service** interface so the provider can be swapped. The LLM returns **structured JSON** — the full sentence plus a per-token tokenization with reading/furigana, meaning, and target-word markers — which drives target emphasis (Req 3), non-target lookups (Req 5), and furigana display without any separate morphological analyzer or dictionary API.
+1. **Fresh sentence per review (Requirement 4).** Example_Sentences are produced by an LLM, abstracted behind a **Sentence Generation Service** interface so the provider can be swapped. The LLM returns **structured JSON** — the full sentence plus a per-token tokenization with Japanese reading/furigana, a Korean (한국어) meaning, and target-word markers — which drives target emphasis (Req 3), non-target lookups (Req 5), and furigana display without any separate morphological analyzer or dictionary API.
 2. **"Sign in with Google" for identity + bring-your-own Gemini API key for generation (Requirements 9, 10).** Identity and generation are deliberately separate:
    - **Identity (Req 9).** The Learner signs in with **"Sign in with Google"** — OAuth 2.0 Authorization Code flow with **PKCE (S256)** and **OpenID Connect**, requesting exactly the scopes `openid email profile`. The backend exchanges the code at Google's token endpoint with a confidential web-application client, validates the Google_ID_Token (issuer, audience, expiry with ≤ 300 s leeway, RS256 signature via Google's JWKS, nonce, `email_verified`), keys the application account on the Subject_Identifier `(iss, sub)`, and issues its **own** signed App_Session. Google access and refresh tokens are discarded after sign-in and never persisted. Google sign-in grants no Gemini usage.
    - **Generation (Req 4, 10).** Each Learner creates a free Gemini_API_Key in Google AI Studio by following the in-app **Key_Setup_Guide**, and pastes it into the app. The backend checks the key format locally, verifies it with one non-generating Gemini_API call, and stores it **encrypted at rest (Fernet)** per Learner. Only the Key_Hint (last 4 characters) ever reaches the browser. The `GeminiAdapter` calls the Gemini `generateContent` endpoint with the Learner's own key and JSON structured output. The application holds no developer-owned Gemini key and uses no OpenAI or ChatGPT service.
 3. **Untrusted Anki deck files (Requirement 2).** A Learner uploads an `.apkg` deck package or an Anki plain-text export (`.txt`/`.tsv`), previews it, maps fields to word / reading / meaning, and confirms. The upload is untrusted input from the network, so the backend treats it as data only: the zip directory is checked before anything is read, only the newest collection file is decompressed (with size caps), the SQLite file is opened read-only with no extension loading, and media is never extracted. All decisions (cleanup, furigana, mapping, skip classification, text parsing) are pure functions, and the import itself runs in one database transaction. No Gemini key is needed.
+4. **Per-session study limits on a 07:00 KST day (Requirements 1.5, 2.26, 8, 11).** "Today" is the Study_Day, which starts at 07:00 Asia/Seoul time, not the server's local calendar date. One pure helper, `study_day(now_utc)` in `app/services/study_day.py`, computes it, and every place that previously used `date.today()` (due selection, manual add, Anki import) calls `current_study_day()` instead. Each Learner's Study_Settings (`new_word_limit`, default 50; `review_word_limit`, default 100) are two columns on `users`. `ReviewService.start_session` selects up to `review_word_limit` due Review_Words, then up to `new_word_limit` New_Words, and the Learner edits both limits in a new "학습 설정" view.
 
 Data (users, Gemini credentials, word entries, review history, scheduling state) persists in a backend database. The system is organized as a thin frontend (SPA) + stateless backend API so it can later be wrapped as a native Mac app with minimal change (see [Mac Wrapping Strategy](#mac-wrapping-strategy)).
 
@@ -25,6 +26,7 @@ Data (users, Gemini credentials, word entries, review history, scheduling state)
 - **Collection schema.** In every schema, notes live in the `notes` table (`id`, `guid`, `mid`, `flds`, …) and `flds` holds all field values joined by the `0x1f` character, in the note type's field order. Legacy schema 11 keeps note types as JSON in `col.models` (keyed by note type id, each with `name` and `flds[{name, ord}]`). Schema 15 and later moved them to the `notetypes (id, name, …)` and `fields (ntid, ord, name, …)` tables, whose `name` columns use Anki's custom **`unicase` collation**; plain SQLite fails with "no such collation sequence" on queries that touch it unless the reader registers a collation of that name. Sources: [anki `schema11.sql`](https://github.com/ankitects/anki/blob/main/rslib/src/storage/schema11.sql), [anki `schema15_upgrade.sql`](https://github.com/ankitects/anki/blob/main/rslib/src/storage/upgrades/schema15_upgrade.sql), [Processing Anki's .apkg files](https://github.com/SergioFacchini/anki-cards-web-browser/blob/master/documentation/Processing%20Anki's%20.apkg%20files.md).
 - **Plain-text exports.** Anki's text format uses `#key:value` header lines at the top of the file (`#separator:`, `#html:`, `#columns:`, `#notetype column:`, `#deck column:`, `#tags column:`, `#guid column:`). The parsing rules this design implements are the ones fixed in Req 2.10–2.16, not Anki's separator guessing. Source: [Anki manual: Text Files](https://docs.ankiweb.net/manual/importing/text-files).
 - **Streaming uploads.** Starlette spools a whole `UploadFile` to disk before the handler runs, so a size check inside the handler comes too late to bound disk use. `python-multipart` (the parser FastAPI uses for forms) exposes a callback-based streaming `MultipartParser`, which lets the route see the part headers (file name) first and then count body bytes as they arrive. Source: [python-multipart API](https://multipart.fastapiexpert.com/api/).
+- **Time zones in Python.** The standard-library `zoneinfo.ZoneInfo("Asia/Seoul")` reads the system IANA time zone database and falls back to the first-party `tzdata` package when no system database exists (Windows, slim containers, frozen PyInstaller builds). Asia/Seoul has had no daylight saving time since 1988, so KST is a fixed UTC+9 offset for every date the app handles. Subtracting a `timedelta` from an aware `datetime` is wall-clock arithmetic in Python, so `(local - timedelta(hours=7)).date()` gives exactly "the local date if the local time is 07:00 or later, else the previous date". Source: [zoneinfo documentation](https://docs.python.org/3/library/zoneinfo.html).
 
 Content from these sources was rephrased for compliance with licensing restrictions.
 
@@ -47,12 +49,12 @@ Content from these sources was rephrased for compliance with licensing restricti
 | HTTP client | **httpx** (async) | Used for Google token/JWKS calls and all Gemini calls; easy to mock with `httpx.MockTransport`. |
 | Anki package reading | stdlib **`zipfile`** + **`sqlite3`**, plus **`zstandard`** | `zipfile` reads the central directory without extracting, so entry names can be checked first. `sqlite3` opens the collection read-only through a `file:…?mode=ro&immutable=1` URI. `zstandard` decompresses `collection.anki21b` as a stream with a byte cap. |
 | Upload parsing | **`python-multipart`** streaming `MultipartParser` | Reads the file name before the body and enforces the 50 MB limit while bytes arrive (Req 2.2, 2.3). |
-| PBT library | **Hypothesis** (Python) | Property-based tests for scheduler, sentence-diff, schema validation, key handling, error mapping, ID-token validation, and the Anki import pure functions (text round-trip, cleanup, furigana, mapping, zip safety). |
+| PBT library | **Hypothesis** (Python) | Property-based tests for scheduler, sentence-identity check, schema validation, key handling, error mapping, ID-token validation, and the Anki import pure functions (text round-trip, cleanup, furigana, mapping, zip safety). |
 | Test runner | **pytest** | Runs unit, integration, and Hypothesis property tests. |
 | Package / env management | **uv** or **Poetry** | Reproducible dependency and virtual-env management for the Python backend. |
 | Mac wrapper (future) | **Tauri** (preferred) or Electron | Loads the same web build; Tauri is lighter and can run a bundled Python backend/SQLite via a sidecar process. |
 
-**Dependency changes:** remove `openai` (no longer imported anywhere) and `authlib` (the PKCE/code-exchange client is plain `httpx`). Keep `httpx`, `python-jose[cryptography]`, and `cryptography`. Add `zstandard>=0.22` (for `collection.anki21b`) and `python-multipart>=0.0.18` (streaming upload parsing; 0.0.18 and later include the fix for the multipart boundary denial-of-service issue). The project supports Python 3.11+, so the standard-library `compression.zstd` module (3.14+) is not relied on.
+**Dependency changes:** remove `openai` (no longer imported anywhere) and `authlib` (the PKCE/code-exchange client is plain `httpx`). Keep `httpx`, `python-jose[cryptography]`, and `cryptography`. Add `zstandard>=0.22` (for `collection.anki21b`) and `python-multipart>=0.0.18` (streaming upload parsing; 0.0.18 and later include the fix for the multipart boundary denial-of-service issue). The project supports Python 3.11+, so the standard-library `compression.zstd` module (3.14+) is not relied on. Add `tzdata>=2024.1` so `ZoneInfo("Asia/Seoul")` resolves on hosts without a system time zone database (Req 1.5, 8.1).
 
 ## Architecture
 
@@ -69,6 +71,7 @@ graph TD
         UI_Sentence["Sentence Renderer (token-based)"]
         UI_Lookup["Lookup Panel"]
         UI_Rate["Reveal + Rating Controls"]
+        UI_Settings["StudySettings View<br/>(학습 설정)"]
     end
 
     subgraph Backend["Backend API (FastAPI / Python, stateless)"]
@@ -77,13 +80,15 @@ graph TD
         WordSvc["Word Service<br/>(CRUD + validation + dedupe)"]
         ImportSvc["AnkiImportService<br/>(readers, cleanup, mapping,<br/>one-transaction import)"]
         PreviewStore["PreviewStore<br/>(in-process, 30 min TTL,<br/>per-account import lock)"]
-        ReviewSvc["Review Service<br/>(due selection, session summary)"]
+        ReviewSvc["Review Service<br/>(capped review + new selection,<br/>session summary)"]
+        SettingsSvc["StudySettingsService<br/>(get / update limits)"]
+        StudyDay["study_day()<br/>(pure, 07:00 KST boundary)"]
         Scheduler["Scheduler<br/>(SM-2-style, pure)"]
         SentenceSvc["SentenceGenerationService<br/>(interface)"]
         Gemini["GeminiAdapter<br/>(per-user key, structured JSON,<br/>validate + retry, error mapping)"]
     end
 
-    DB[("PostgreSQL<br/>users, gemini_credentials,<br/>revoked_app_sessions,<br/>word_entries, review_history,<br/>sentences")]
+    DB[("PostgreSQL<br/>users (+ study limits), gemini_credentials,<br/>revoked_app_sessions,<br/>word_entries, review_history,<br/>sentences")]
     GOIDC["Google OAuth / OIDC<br/>(authorize, token, JWKS)"]
     GAPI["Gemini API<br/>(models.list for verify,<br/>generateContent)"]
     TMP[("Per-preview temp dir<br/>(tempfile, deleted after parsing)")]
@@ -108,6 +113,12 @@ graph TD
     ReviewSvc --> DB
     ReviewSvc --> KeySvc
     ReviewSvc --> Scheduler
+    ReviewSvc -->|"limits from users row"| DB
+    UI_Settings -->|"GET / PUT /api/study-settings"| SettingsSvc
+    SettingsSvc --> DB
+    ReviewSvc --> StudyDay
+    WordSvc --> StudyDay
+    ImportSvc --> StudyDay
     Scheduler --> DB
     SentenceSvc --> Gemini
     Gemini -->|"get_api_key(user_id)"| KeySvc
@@ -128,6 +139,9 @@ graph TD
 - **Pure Scheduler.** The scheduling computation is a side-effect-free function `compute_next_interval(rating, history) -> interval_days`. Persistence is a separate step. This makes the monotonicity invariant (Req 7.3) directly property-testable and makes failure handling (Req 7.5) a clean transaction boundary.
 - **Pure decision functions at the provider boundaries.** Key format checking, Key_Hint derivation, Gemini error classification (verification and generation), and Google_ID_Token validation are pure functions over plain inputs (strings, status codes, JSON bodies, claims + JWKS + clock). The I/O wrappers only perform HTTP calls and delegate every decision to these functions, which makes Properties 21–25 fast Hypothesis tests with no network.
 - **Anki import as a two-step, server-held preview.** The upload is parsed once into an in-memory `ParsedDeck` held in a `PreviewRecord` (owner, 30-minute expiry, state). Switching note types and confirming work from that record, so the file is never re-read and its temporary directory is deleted as soon as parsing ends. The import itself is one pure planning step (`plan_import`) followed by one database transaction, so the summary counts and the rollback guarantee (Req 2.31) are both easy to test. Like the consumed-state registry for sign-in, the preview store is in-process; a multi-instance deployment would need a shared store (see [Anki Import](#anki-import-requirement-2)).
+- **One Study_Day source.** Due selection, manual add, and Anki import all take their date from `current_study_day()`, so a word added at 06:30 KST on 3 June gets `next_review_date = 2 June` and a session started at 06:59 KST still uses 2 June. The scheduler's `session_date + interval` therefore lands on Study_Days too. The helper is pure (`study_day(now_utc)`), so the 07:00 boundary is a fast property test (Property 35).
+- **Study_Settings live on `users`.** Requirement 11.1 asks for exactly one Study_Settings per account. Two NOT NULL columns with server defaults on `users` give that by construction, need no join on session start, and give existing rows the defaults of Req 11.2 during the migration. A separate `study_settings` table was rejected: it adds a 1–1 row that must be created lazily or backfilled and adds nothing the two columns cannot hold.
+- **Review_Word means "has a ReviewRecord".** Classification uses an `EXISTS` subquery on `review_records`, not `repetitions > 0`. A lapse (rating 1) resets `repetitions` to 0, and the glossary says such a word is still a Review_Word. `interval_days` is not used either, because it is 0 only before the first rating and is not documented as a classification field.
 - **Stateless API + SPA split.** The API is stateless apart from the database: the client presents the **app's own session** (a short-lived signed JWT issued only after the backend validated the Google_ID_Token). The only server-side session state is a revocation list of logged-out session IDs (Req 9.13). This is what makes the later Mac wrapping (Tauri/Electron loading the same build) a packaging change rather than a rewrite.
 
 ## Components and Interfaces
@@ -135,7 +149,7 @@ graph TD
 ### Frontend components
 
 - **Login View** — shows a single "Google로 계속하기" button that navigates the browser to `GET /api/auth/login`. It also renders the callback error states returned by the bridge (Req 9.4, 9.5, 9.7, 9.10): "login could not be verified", "sign-in was not completed", "sign-in could not be completed", and "account could not be verified", each with a retry control that starts a new login (Req 9.5). It is the entry point shown after logout or on any `401` (Req 9.13, 9.14).
-- **App shell / header** — after the bridge stores the App_Session, the shell calls `GET /api/auth/me`. The header shows the Learner's name or email, a **"Gemini 키 설정"** entry that opens the GeminiKeySetup view at any time (showing "연결됨 ····abcd" when connected), and a logout control. When `/me` reports `gemini_key.connected == false` right after sign-in, the shell opens GeminiKeySetup automatically. The guide offers a "나중에" control that returns to the Add Word view, because adding words stays available without a key (Req 10.2).
+- **App shell / header** — after the bridge stores the App_Session, the shell calls `GET /api/auth/me`. The header shows the Learner's name or email, a **"Gemini 키 설정"** entry that opens the GeminiKeySetup view at any time (showing "연결됨 ····abcd" when connected), a **"학습 설정"** entry directly after it that opens the StudySettings view, and a logout control. In `App.tsx`, `type View = Tab | 'key' | 'settings'`. The new button copies the key entry's classes and active state (`aria-current="page"` and `border-forest/30 bg-forest-soft text-forest` when `view === 'settings'`), shows the glyph `設` with the label "학습 설정" from the `lg` breakpoint, carries `title="학습 설정"`, `aria-label="학습 설정"`, and `data-testid="header-settings-entry"`, and calls `setView('settings')`. `main` renders `<StudySettings />` when `view === 'settings'`. When `/me` reports `gemini_key.connected == false` right after sign-in, the shell opens GeminiKeySetup automatically. The guide offers a "나중에" control that returns to the Add Word view, because adding words stays available without a key (Req 10.2).
 - **GeminiKeySetup View (Key_Setup_Guide)** — implements Req 10.3–10.15 on the client:
   - Five numbered steps in order (Req 10.3): (1) open the Google AI Studio API key page via a link to `https://aistudio.google.com/apikey` with `target="_blank" rel="noopener noreferrer"`; (2) sign in with a Google_Account; (3) create a key by choosing an existing Google Cloud project or creating a new one; (4) copy the key; (5) paste it into the input below.
   - Notices (Req 10.4): creating a key is free and needs no payment card; the free tier is rate limited; the Gemini API terms require users to be 18 or older; users in the EEA, Switzerland, or the UK must use a paid (billing-enabled) key.
@@ -163,14 +177,19 @@ graph TD
     - `import_in_progress`: stays on preview with "다른 가져오기가 진행 중이에요. 끝난 뒤 다시 시도해 주세요." (Req 2.42).
     - `preview_expired`: "미리보기가 만료되었어요. 파일을 다시 올려 주세요.", then back to idle (Req 2.36).
     - `import_failed`: "가져오기에 실패해 단어를 하나도 추가하지 않았어요.", then back to idle (Req 2.31).
-- **Review Session View** — orchestrates the session loop (Req 8): requests the due list, presents one Target_Word at a time, requests a sentence, handles reveal/rating, and renders the end-of-session summary. Gemini-specific states:
+- **StudySettings View** (`views/StudySettings.tsx`, Req 11.3–11.5) — one `surface-card` with the heading "학습 설정" and the line "한 번의 복습 세션에 포함할 단어 수를 정해요. 저장한 값은 다음 세션부터 적용돼요."
+  - **Load.** On mount it calls `getStudySettings()` and shows a spinner until the values arrive. A load failure shows `bg-danger-soft` text "설정을 불러오지 못했어요." with a "다시 시도" button. A 401 is handled by the shell's `onSignedOut`.
+  - **Inputs.** Two labelled inputs: **신규 단어** (`new_word_limit`, helper text "처음 학습하는 단어, 기본 50") and **복습 단어** (`review_word_limit`, helper text "복습 날짜가 된 단어, 기본 100"). Each is `<input type="number" inputMode="numeric" min={0} max={1000} step={1}>`. The value is held as the raw string, so an empty or partial entry is never silently coerced.
+  - **Inline validation.** `validateStudyLimit(text)` (exported from the view module) accepts exactly a string matching `^\d+$` whose integer value is at most 1000. It runs on every change and shows "0부터 1000 사이의 정수를 입력하세요" in `text-danger` under each invalid input, with `aria-invalid` and `aria-describedby` set (Req 11.5). While either input is invalid, **저장** is disabled and nothing is sent.
+  - **Save.** **저장** (vermilion, disabled while a request is in flight) calls `putStudySettings({new_word_limit, review_word_limit})` with both values as numbers. On success the inputs take the returned values and a `bg-forest-soft text-forest` status line (`role="status"`) says "저장했어요. 다음 복습 세션부터 적용돼요." The line clears on the next edit. A server `invalid_study_settings` error puts each `fieldErrors` entry under its matching input and keeps the typed values. Any other error shows "저장하지 못했어요. 잠시 후 다시 시도해 주세요." and leaves the inputs as typed.
+- **Review Session View** — orchestrates the session loop (Req 8): requests the session's word list, presents one Target_Word at a time, requests a sentence, handles reveal/rating, and renders the end-of-session summary. The view needs no change for the limits. `ReviewSessionOut.due_words` keeps its name and now holds the Review_Words followed by the New_Words in presentation order, the progress counter's total is still `due_words.length`, and the summary total is the server's `total_reviewed`. The existing no-due screen covers Req 8.5, including the case where both limits are 0. Gemini-specific states:
   - `409 gemini_key_required` on session start → opens the Key_Setup_Guide instead of starting the session (Req 10.1).
   - `409 gemini_key_required` on sentence generation → "Gemini API 키를 설정하세요" message with a control that opens the Key_Setup_Guide; the word stays unrated (Req 4.7, 10.15). After a key is connected, the view re-requests the sentence for the same word.
   - `422 invalid_gemini_key` → invalid-key message with a control that opens GeminiKeySetup in replace mode; the word stays unrated (Req 4.9).
   - `429 gemini_quota_exceeded` → quota message saying the Gemini_Quota is exhausted and to wait and retry later, with a retry control; the word stays unrated (Req 4.8).
   - `502 generation_timeout` / `502 generation_failed` → generation-error message with a retry control (Req 4.5, 4.10, 4.11, 4.12).
 - **Sentence Renderer** — renders the Example_Sentence from the structured token array. Each token is an interactive span. Tokens flagged `isTarget` get an emphasis style differing in at least one observable attribute (Req 3.2). A per-sentence "show furigana" toggle renders `reading` in parentheses after each token (confirmed decision 3b).
-- **Lookup Panel** — on clicking a Non_Target_Word, shows that token's `meaning` and `reading`, and `furigana` when the token `containsKanji` (Req 5.1, 5.2). Replaces content on a new selection (Req 5.3); shows an unavailable message and clears prior content when meaning is absent (Req 5.4); persists until another selection or dismissal (Req 5.5).
+- **Lookup Panel** — on clicking a Non_Target_Word, shows that token's Korean (한국어) `meaning` together with its Japanese `surface` and `reading` (Req 5.6), and `furigana` when the token `containsKanji` (Req 5.1, 5.2). Replaces content on a new selection (Req 5.3); shows an unavailable message and clears prior content when meaning is absent (Req 5.4); persists until another selection or dismissal (Req 5.5).
 - **Reveal + Rating Controls** — reveal control shows Target_Word reading + meaning (Req 6.1); rating controls appear only after reveal (Req 6.2, 6.3) and offer exactly four ordered levels; selecting a level sends the rating and shows the selection (Req 6.4).
 
 **Typed client functions** (`frontend/src/api/client.ts`), all built on the existing `request<T>()` helper that attaches the App_Session bearer token and turns non-2xx responses into an `ApiError { status, code, message }`:
@@ -243,6 +262,20 @@ Client helper changes in `client.ts`:
 - **Error codes.** The `ImportErrorCode` values are added to `CODED_ERRORS` and to `ApiErrorCode`.
 - **Per-role errors.** `classify()` passes a coded detail's `errors` array through as `fieldErrors`, so `invalid_mapping` arrives as `fieldErrors: [{field: "word" | "reading" | "meaning", message}]`.
 
+**Study settings client functions** (`frontend/src/api/endpoints.ts`, types in `types.ts`, Req 11):
+
+```ts
+export interface StudySettings { new_word_limit: number; review_word_limit: number }
+export type StudySettingsErrorCode = 'invalid_study_settings'
+
+export const STUDY_SETTINGS_PATH = '/api/study-settings'
+export function getStudySettings(): Promise<StudySettings>               // GET /api/study-settings
+export function putStudySettings(settings: StudySettings): Promise<StudySettings>
+                                                                        // PUT /api/study-settings
+```
+
+Both use `request<T>()`, so the bearer token and the 401 sign-out behave as on every other route. `'invalid_study_settings'` is added to `CODED_ERRORS` (and its type parameter list gains `StudySettingsErrorCode`), and `StudySettingsErrorCode` joins the `ApiErrorCode` union. This is required, not cosmetic: without it, `classify()` falls through to `case 422` and reports the error as `invalid_rating`. Because the backend sends `{code, message, errors}`, the existing `toFieldErrors` path delivers `fieldErrors: [{field: "new_word_limit" | "review_word_limit", message}]` with no other client change.
+
 ### Backend services and interfaces
 
 The backend service interfaces are expressed as Python abstract base classes / `Protocol`s; concrete adapters (e.g. the Gemini sentence generator) implement them. `Difficulty` is an `IntEnum` over 1..4 (hardest=1 .. easiest=4, Req 6.2, 7.1).
@@ -276,7 +309,7 @@ class QuotaExceededError(SentenceGenerationError):
 
 
 class GenerationTimeout(SentenceGenerationError):
-    """Req 4.2 / 4.5: an attempt exceeded its 5 s budget."""
+    """Req 4.2 / 4.5: an attempt exceeded its 15 s budget."""
 
 
 class GenerationError(SentenceGenerationError):
@@ -369,9 +402,12 @@ class ApiKeyProvider(Protocol):
 
 class WordService(ABC):
     @abstractmethod
-    def add_word(self, user_id: str, data: "WordInput") -> "WordEntry":
+    def add_word(
+        self, user_id: str, data: "WordInput", today: "date | None" = None
+    ) -> "WordEntry":
         """Req 1: validate (lengths, whitespace), dedupe by exact word form,
-        set next_review_date = today. Raises ValidationError / DuplicateError."""
+        set next_review_date = today, where an omitted today means
+        current_study_day() (Req 1.5). Raises ValidationError / DuplicateError."""
         ...
 
     @abstractmethod
@@ -381,10 +417,18 @@ class WordService(ABC):
 
 class ReviewService(ABC):
     @abstractmethod
-    def start_session(self, user_id: str, today: "date") -> "ReviewSession | NoDueWords":
-        """Req 10.1 then 8.1 / 8.5: raise MissingGeminiKeyError if no key is
-        stored (before due selection); due = next_review_date <= today;
-        empty -> no session."""
+    def start_session(self, user_id: str, day: "date") -> "ReviewSessionOut | NoDueWords":
+        """Req 10.1, then 8.1 / 8.5 / 11.4 / 11.6 / 11.7. `day` is the current
+        Study_Day (positional, so existing callers keep working).
+        1. Raise MissingGeminiKeyError if no key is stored, before any query.
+        2. Read new_word_limit and review_word_limit from the User row.
+        3. Review_Words: the user's words with at least one ReviewRecord and
+           next_review_date <= day, ordered (next_review_date, created_at, id),
+           LIMIT review_word_limit.
+        4. New_Words: the user's words with no ReviewRecord, any
+           next_review_date, ordered (created_at, id), LIMIT new_word_limit.
+        5. Session word list = Review_Words + New_Words; empty -> NoDueWords
+           and no session is registered."""
         ...
 
     @abstractmethod
@@ -393,6 +437,26 @@ class ReviewService(ABC):
     ) -> "RatingResult":
         """Req 6/7/8.3/8.4: validate rating, require revealed, schedule,
         persist (one transaction), advance or summarize."""
+        ...
+
+
+class StudySettingsService:
+    """Req 11: read and update one Learner's Study_Settings (two columns on
+    users). Concrete class, no ABC: there is one storage and nothing to swap.
+    Every method is keyed by the App_Session's user id, so a Learner can read
+    or modify only their own settings (Req 11.8)."""
+
+    def __init__(self, db: "Session") -> None: ...
+
+    def get(self, user_id: str) -> "StudySettingsOut":
+        """Req 11.2, 11.3: the stored values, which are 50 / 100 until the
+        Learner saves (server defaults)."""
+        ...
+
+    def update(self, user_id: str, data: "StudySettingsIn") -> "StudySettingsOut":
+        """Req 11.4: set both columns on the user's row and commit once. Takes
+        an already-validated StudySettingsIn, so invalid values never reach
+        the database (Req 11.5). On a database error: rollback, re-raise."""
         ...
 
 
@@ -411,7 +475,8 @@ class SentenceGenerationService(ABC):
         self, user_id: str, target: "WordEntry", previous: "GeneratedSentence | None"
     ) -> "GeneratedSentence":
         """Req 4: produce a sentence containing the target, 1-50 words,
-        differing from previous, within the time budget; returns validated
+        whose whitespace-trimmed text is not identical to the previous
+        sentence's trimmed text, within the time budget; returns validated
         structured output. GeminiAdapter obtains the key via the injected
         ApiKeyProvider (once per request) and calls generateContent. Raises
         MissingGeminiKeyError (4.7), QuotaExceededError (4.8),
@@ -469,6 +534,53 @@ def validate_google_id_token(
     with the issuer normalized to its canonical https form."""
 ```
 
+**Study_Day helper** (`app/services/study_day.py`, new, pure; Property 35):
+
+```python
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta, time
+from zoneinfo import ZoneInfo
+
+STUDY_DAY_ZONE = ZoneInfo("Asia/Seoul")      # KST, UTC+9, no DST
+STUDY_DAY_START = time(7, 0)                 # a Study_Day starts at 07:00 KST
+_START_OFFSET = timedelta(hours=STUDY_DAY_START.hour, minutes=STUDY_DAY_START.minute)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def study_day(now_utc: datetime) -> date:
+    """The Study_Day of an instant (glossary: Study_Day).
+
+    A naive datetime is treated as UTC, because the app stores and compares
+    UTC instants (SQLite CURRENT_TIMESTAMP and datetime.now(UTC) are both UTC).
+    An aware datetime in any zone is converted to KST first. The result is the
+    KST date when the KST wall time is 07:00 or later, else the previous date.
+    Equivalently, for KST's fixed offset: (now_utc in UTC + 2 h).date()."""
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=UTC)
+    local = now_utc.astimezone(STUDY_DAY_ZONE)
+    return (local - _START_OFFSET).date()   # wall-clock arithmetic
+
+
+def current_study_day(clock: Callable[[], datetime] | None = None) -> date:
+    """study_day(clock()). The clock is injectable for tests. `_utc_now` is
+    looked up at call time, not bound as a default, so tests can also
+    monkeypatch `app.services.study_day._utc_now`."""
+    return study_day((clock or _utc_now)())
+```
+
+Callers (each replaces a `date.today()` call that used the server's local calendar date):
+
+| Call site | Change | Requirement |
+| --- | --- | --- |
+| `app/api/routes/review.py` `start_session` | `service.start_session(user.id, current_study_day())` | 8.1 |
+| `app/services/word_service.py` `WordService.add_word` | `creation_date = today if today is not None else current_study_day()` | 1.5 |
+| `app/services/anki_import/import_service.py` `AnkiImportService.__init__` | default `today: Callable[[], date] = current_study_day` | 2.26 |
+
+`add_words_bulk` and `_entry_values` already take `today` from the caller and stay unchanged. `get_anki_import_service` in `deps.py` passes no `today`, so it picks up the new default. Tests keep injecting fixed dates through the same `today` parameters, so the existing unit tests need no new fakes.
+
 - **Auth Service (Sign in with Google)** — drives the OAuth 2.0 Authorization Code + PKCE + OIDC flow (Req 9), shown in the sequence diagram below.
   - **Login (Req 9.1, 9.2, 9.11).** Generates a fresh `state` (32 random bytes, base64url), a fresh `nonce`, and a PKCE verifier (43–128 chars) with its S256 challenge. These go into the existing **encrypted, HttpOnly, SameSite=Lax authorization-start cookie** (Fernet, `TOKEN_ENCRYPTION_KEY`), path `/api/auth`, `Max-Age=600`, `Secure` when the redirect URI is HTTPS, with `expires_at = now + 10 min`. The browser is redirected (302) to `https://accounts.google.com/o/oauth2/v2/auth` with `client_id`, `redirect_uri`, `response_type=code`, `scope=openid email profile`, `state`, `nonce`, `code_challenge`, `code_challenge_method=S256`, and `prompt=select_account`. `access_type=offline` is not sent.
   - **Callback state check (Req 9.3, 9.4).** The callback always deletes the auth-start cookie. If Google returned `error` (e.g. `access_denied`) the attempt ends with `AuthorizationDeniedError` (Req 9.5). Otherwise the state must be present, decrypt from the cookie, match the cookie's state under constant-time comparison, be unexpired, and be unused. "Unused" is enforced by a **consumed-state registry**: a SHA-256 hash of each accepted state is recorded with its expiry, so replaying a captured cookie within its 10 minutes is rejected. The registry is in-process with a TTL for the single-process dev server; a multi-instance deployment would back it with a table. Any failure raises `AuthStateError`, and no token exchange happens.
@@ -484,14 +596,61 @@ def validate_google_id_token(
   - **Verification.** One `GET https://generativelanguage.googleapis.com/v1beta/models?pageSize=1` with the `x-goog-api-key` header and a 10 s total timeout (Req 10.7, 10.9). This request generates no content. The result is mapped by `classify_verification`: `VALID` or `QUOTA_EXHAUSTED` → encrypt and upsert into `gemini_credentials` in one transaction (Req 10.10, 10.11). `INVALID` → `KeyRejectedError` (Req 10.8). `UNAVAILABLE` → `KeyVerificationUnavailableError` (Req 10.9). Nothing is written on any failure, so the previously stored key is unchanged and stays in use until the upsert commits (Req 10.14).
   - **Remove and read.** `remove` deletes the row (Req 10.15). `get_api_key` decrypts on demand for the adapter.
   - **Secrecy (Req 10.12, 10.13).** The key is never logged. Exceptions from `httpx` are caught and re-raised as the service's own exception types with fixed messages (`raise ... from None`), so the original exception and its context are dropped. Any provider message that is logged is first passed through `redact(message, key)`.
-- **Word Service** — Req 1 validation, exact-match dedupe within a Learner's collection, and the "due immediately" rule (Req 1.5). Works without a stored Gemini_API_Key (Req 10.2). For the Anki import it gains two methods that keep the same rules in one place: `existing_word_forms(user_id) -> set[str]` and `add_words_bulk(user_id, inputs: Sequence[WordInput], today, chunk_size=1000) -> int`. `add_words_bulk` builds rows the same way `add_word` does (a shared private `_entry_values` helper; `next_review_date = today`, `ease_factor = 2.5`, `interval_days = 0`, `repetitions = 0`). It inserts them with SQLAlchemy 2.0 ORM bulk `insert(WordEntry)` in chunks and **does not commit**; the caller owns the transaction. `add_word` keeps its current behavior.
+- **Word Service** — Req 1 validation, exact-match dedupe within a Learner's collection, and the "due immediately" rule (Req 1.5): `next_review_date` is the current Study_Day from `current_study_day()` unless a test injects `today`. Works without a stored Gemini_API_Key (Req 10.2). For the Anki import it gains two methods that keep the same rules in one place: `existing_word_forms(user_id) -> set[str]` and `add_words_bulk(user_id, inputs: Sequence[WordInput], today, chunk_size=1000) -> int`. `add_words_bulk` builds rows the same way `add_word` does (a shared private `_entry_values` helper; `next_review_date = today`, `ease_factor = 2.5`, `interval_days = 0`, `repetitions = 0`). It inserts them with SQLAlchemy 2.0 ORM bulk `insert(WordEntry)` in chunks and **does not commit**; the caller owns the transaction. `add_word` keeps its current behavior.
 - **AnkiImportService** — Req 2; see [Anki Import](#anki-import-requirement-2) below.
-- **Review Service** — Req 8 orchestration: Gemini key presence check before due selection (Req 10.1), due selection, one-at-a-time presentation, rating validation (Req 6.5, 8.6), delegation to Scheduler, transactional persistence (Req 7.4/7.5), advance-or-summarize (Req 8.3/8.4).
+- **Review Service** — Req 8 orchestration: Gemini key presence check before selection (Req 10.1), capped selection of Review_Words and New_Words, one-at-a-time presentation, rating validation (Req 6.5, 8.6), delegation to Scheduler, transactional persistence (Req 7.4/7.5), advance-or-summarize (Req 8.3/8.4).
+  - **Unchanged.** The constructor (`db`, `has_gemini_key`), the key gate as the first statement of `start_session`, `reveal`, `record_rating`, the in-memory `_sessions` registry, `SessionState`, and the summary logic stay as they are. `SessionState.session_date` now holds the Study_Day, so `record_rating` stores `session_date + interval` (Req 7.4). The summary's `total_reviewed = len(state.rated_word_ids)` already counts the session's own word list, because the session ends only after every listed word is rated (Req 8.4).
+  - **Selection (replaces the single `next_review_date <= today` query).**
+
+    ```python
+    def start_session(self, user_id: str, day: date) -> ReviewSessionOut | NoDueWords:
+        if self._has_gemini_key is not None and not self._has_gemini_key(user_id):
+            raise MissingGeminiKeyError()                    # Req 10.1, before any query
+
+        user = self._db.get(User, user_id)                    # limits from the User row
+        review_limit = user.review_word_limit if user else DEFAULT_REVIEW_WORD_LIMIT
+        new_limit = user.new_word_limit if user else DEFAULT_NEW_WORD_LIMIT
+
+        has_review = (
+            select(ReviewRecord.id)
+            .where(ReviewRecord.word_id == WordEntry.id)
+            .exists()                                         # correlated EXISTS
+        )
+        review_words: list[WordEntry] = []
+        if review_limit > 0:                                  # Req 11.7
+            review_words = list(self._db.execute(
+                select(WordEntry)
+                .where(WordEntry.user_id == user_id, has_review,
+                       WordEntry.next_review_date <= day)     # Due_Word on the Study_Day
+                .order_by(WordEntry.next_review_date, WordEntry.created_at, WordEntry.id)
+                .limit(review_limit)
+            ).scalars())
+        new_words: list[WordEntry] = []
+        if new_limit > 0:                                     # Req 11.6
+            new_words = list(self._db.execute(
+                select(WordEntry)
+                .where(WordEntry.user_id == user_id, ~has_review)   # any next_review_date
+                .order_by(WordEntry.created_at, WordEntry.id)
+                .limit(new_limit)
+            ).scalars())
+
+        words = review_words + new_words                      # reviews first (Req 8.1, 8.2)
+        if not words:
+            return NoDueWords()                               # Req 8.5, no session registered
+        ...  # register SessionState(session_date=day, word_ids=[w.id for w in words])
+        return ReviewSessionOut(session_id=..., due_words=[WordEntryOut.model_validate(w) for w in words])
+    ```
+
+  - **Why the groups are disjoint.** One query requires `EXISTS` and the other `NOT EXISTS` on the same correlated subquery, so no word can be in both lists, and the concatenation never repeats an id (Req 8.2).
+  - **Creation order.** "Creation order" is `(created_at, id)`. `created_at` comes from the database `CURRENT_TIMESTAMP`, which has one-second resolution on SQLite, and words imported in one transaction share one value. Ties are then broken by `id`. That order is deterministic (Property 36), but within one second it is UUID order, not insertion order. This is a known limitation; see the note in Data Models.
+  - **Missing user row.** `CurrentUser` guarantees the row exists on the HTTP path. The fallback to the defaults only keeps direct service calls in tests with a bare user id working.
+- **StudySettingsService** — Req 11. `get` loads `User` by id and returns `StudySettingsOut(new_word_limit, review_word_limit)`. `update` sets both attributes from an already-validated `StudySettingsIn` and commits once, so either both values are stored or neither is (Req 11.4, 11.5). A database error rolls back and propagates as a 500. It needs an App_Session and no Gemini key.
 - **Scheduler** — pure SM-2-style interval computation (see [Spaced-Repetition Algorithm](#spaced-repetition-algorithm)).
 - **SentenceGenerationService + GeminiAdapter** — the interface is provider-agnostic. `GeminiAdapter`:
   - **Key lookup.** Calls the injected `ApiKeyProvider` once per generation request. `MissingGeminiKeyError` propagates before any HTTP request is made (Req 4.7).
-  - **Request.** Each attempt is one `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent` with the `x-goog-api-key` header. The body carries `systemInstruction`, the user prompt (target + previous sentence), and `generationConfig = {responseMimeType: "application/json", responseSchema: GEMINI_RESPONSE_SCHEMA}`.
-  - **Time budget.** Each attempt is bounded at 5 s of wall-clock time by `asyncio.wait_for` around the httpx call (Req 4.2).
+  - **Request.** Each attempt is one `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent` with the `x-goog-api-key` header. The body carries `systemInstruction`, the user prompt (target + previous sentence), and `generationConfig = {responseMimeType: "application/json", responseSchema: GEMINI_RESPONSE_SCHEMA}`. The `systemInstruction` asks for each token's `meaning` in Korean (한국어), while `text`, `surface`, and `reading` stay Japanese (Req 5.6).
+  - **Identity check (Req 4.3, 4.6).** A schema-valid candidate that contains the target is discarded and retried only if its full sentence `text`, after trimming leading and trailing whitespace, is identical to the trimmed `text` of the immediately preceding `GeneratedSentence` for that word. Any other difference in the text is accepted.
+  - **Time budget.** Each attempt is bounded at 15 s of wall-clock time by `asyncio.wait_for` around the httpx call (Req 4.2).
   - **Pipeline.** Runs the validation + retry pipeline below, which also applies the error mapping. The Review Service maps each exception to its HTTP error code, and the Target_Word stays in the session.
 
 ### Google sign-in sequence
@@ -870,7 +1029,7 @@ def plan_import(
 
 class AnkiImportService:
     def __init__(self, db: Session, store: PreviewStore, words: WordService,
-                 today: Callable[[], date] = date.today): ...
+                 today: Callable[[], date] = current_study_day): ...
     def create_preview(self, user_id: str, received: ReceivedFile, workdir: Path) -> ImportPreviewOut: ...
     def get_preview(self, user_id: str, preview_id: str, note_type_id: str | None) -> ImportPreviewOut: ...
     def confirm(self, user_id: str, preview_id: str, body: ConfirmImportIn) -> ImportSummaryOut: ...
@@ -894,7 +1053,7 @@ class AnkiImportService:
   - Any exception calls `db.rollback()` and is re-raised as `ImportFailedError` with `from None`. This includes `IntegrityError` from a word added manually during the import, a `WordInput` validation failure, and any database error.
   - Nothing is committed before the single commit, so a failure leaves the Word_Collection exactly as it was (Req 2.31), and no summary is returned.
 
-  The summary contains the four counts and `skipped[:20]` (Req 2.33, 2.34). Only `word_form`, `reading`, and `meaning` are taken from a note, and every new row starts with default scheduling state and no review records (Req 2.30). Created words are due today (Req 2.26).
+  The summary contains the four counts and `skipped[:20]` (Req 2.33, 2.34). Only `word_form`, `reading`, and `meaning` are taken from a note, and every new row starts with default scheduling state and no review records (Req 2.30). Created words get `next_review_date` = the Study_Day of the confirm, from `today()` = `current_study_day()` (Req 2.26). Because they have no ReviewRecord, they are New_Words and are selected by creation order up to the New_Word_Limit (Req 8.1).
 - **Performance (Req 2.6, 2.32).** Parsing 20,000 notes is a single `SELECT … ORDER BY id`, or one pass over at most 50 MB of text. The import is one in-memory planning pass plus bulk inserts in chunks of 1,000 inside one transaction, which takes a few seconds at most for 20,000 rows on SQLite or PostgreSQL. Integration tests assert both budgets with a generated 20,000-note deck.
 
 #### Upload, preview, and confirm sequence
@@ -939,7 +1098,8 @@ japanese-vocab-trainer/
 │   ├── src/
 │   │   ├── components/            # SentenceRenderer, LookupPanel, RatingControls, ...
 │   │   ├── views/                 # Login, GeminiKeySetup (new), AddWord (+ tabs), ImportDeck (new),
-│   │   │                          #   importMapping.ts (client mapping validation), ReviewSession
+│   │   │                          #   importMapping.ts (client mapping validation), ReviewSession,
+│   │   │                          #   StudySettings (new; 신규 단어 / 복습 단어 limits)
 │   │   └── api/                   # typed HTTP client (getMe, get/put/deleteGeminiKey, ...)
 │   ├── index.html
 │   ├── vite.config.ts             # proxies /api -> backend (OAuth callback goes through it)
@@ -952,19 +1112,22 @@ japanese-vocab-trainer/
 │   │   ├── config.py              # env settings (Pydantic BaseSettings)
 │   │   ├── api/                   # HTTP layer ONLY — routing, (de)serialization, status codes
 │   │   │   ├── deps.py            # current user (rejects revoked sids), DB session, service wiring
-│   │   │   │                      #   (+ get_preview_store singleton, get_anki_import_service)
+│   │   │   │                      #   (+ get_preview_store singleton, get_anki_import_service,
+│   │   │   │                      #   get_study_settings_service / StudySettingsServiceDep)
 │   │   │   ├── upload.py          # streaming multipart reader with the 50 MB cap — new
 │   │   │   └── routes/
 │   │   │       ├── auth.py        # /api/auth/* (login, callback + HTML bridge, logout, me)
 │   │   │       ├── gemini_key.py  # /api/gemini-key (GET/PUT/DELETE) — new
 │   │   │       ├── words.py       # /api/words*
 │   │   │       ├── word_import.py # /api/words/import/preview* — new
-│   │   │       └── review.py      # /api/review/*
+│   │   │       ├── study_settings.py # /api/study-settings (GET/PUT) — new
+│   │   │       └── review.py      # /api/review/* (start_session uses current_study_day())
 │   │   ├── schemas/               # Pydantic request/response + LLM sentence schema
 │   │   │   ├── word.py
 │   │   │   ├── review.py
 │   │   │   ├── gemini_key.py      # GeminiKeyIn(api_key: SecretStr), status/connect responses
 │   │   │   ├── word_import.py     # ImportPreviewOut, ConfirmImportIn, ImportSummaryOut — new
+│   │   │   ├── study_settings.py  # StudySettingsIn (strict ints 0..1000), StudySettingsOut — new
 │   │   │   └── sentence.py        # SentenceTokenSchema, GeneratedSentenceSchema, GEMINI_RESPONSE_SCHEMA
 │   │   ├── models/                # SQLAlchemy ORM (DB tables)
 │   │   │   ├── user.py
@@ -978,7 +1141,9 @@ japanese-vocab-trainer/
 │   │   │   ├── gemini_key_service.py  # format check, verify, encrypt/store, hint, remove
 │   │   │   ├── word_service.py    # + existing_word_forms, add_words_bulk (no commit)
 │   │   │   ├── anki_import/       # Req 2 — new (see Anki Import for the module list)
-│   │   │   ├── review_service.py
+│   │   │   ├── review_service.py  # capped Review_Word + New_Word selection
+│   │   │   ├── study_day.py       # PURE study_day(now_utc), current_study_day() — new
+│   │   │   ├── study_settings_service.py  # get / update the two limits — new
 │   │   │   ├── scheduler.py       # PURE function; primary Hypothesis target
 │   │   │   ├── gemini_errors.py   # PURE classify_verification / classify_generation_failure
 │   │   │   └── sentence_generation/
@@ -995,9 +1160,10 @@ japanese-vocab-trainer/
 │   ├── alembic/
 │   │   └── versions/
 │   │       ├── fc993ac91694_initial_schema.py
-│   │       └── <rev>_google_signin_gemini_byok.py   # new (see Data Models)
+│   │       ├── d2f7e806032a_google_signin_gemini_byok.py   # current head
+│   │       └── c7a1e9f4b2d8_add_study_settings.py          # new; down_revision d2f7e806032a
 │   ├── tests/
-│   │   ├── properties/            # Hypothesis property tests (Properties 1–34)
+│   │   ├── properties/            # Hypothesis property tests (Properties 1–37)
 │   │   ├── fixtures/anki_builders.py  # builds tiny .apkg / text fixtures in code — new
 │   │   ├── unit/                  # example / edge-case tests
 │   │   └── integration/           # mocked Google + Gemini boundaries, DB, auth-protected routes
@@ -1053,6 +1219,9 @@ class User(BaseModel):
     oidc_issuer: str              # normalized to "https://accounts.google.com"
     oidc_subject: str             # Google `sub`
     created_at: datetime
+    # Study_Settings (Req 11.1, 11.2): exactly one pair per account
+    new_word_limit: int = 50      # New_Word_Limit, 0..1000
+    review_word_limit: int = 100  # Review_Word_Limit, 0..1000
     # 1—0..1 GeminiCredential
 
 
@@ -1076,7 +1245,7 @@ class WordEntry(BaseModel):
     word_form: str                # Japanese word, 1-50 chars (Req 1.1), unique per user (Req 1.4)
     reading: str                  # 1-100 chars
     meaning: str                  # 1-500 chars
-    next_review_date: date        # scheduling state (Req 7.4); set to creation date (Req 1.5)
+    next_review_date: date        # scheduling state (Req 7.4); set to the creation Study_Day (Req 1.5, 2.26)
     ease_factor: float = 2.5      # SM-2 ease, default 2.5 (scheduler state)
     interval_days: int = 0        # last computed interval, default 0
     repetitions: int = 0          # consecutive successful reviews, default 0
@@ -1094,7 +1263,7 @@ class ReviewRecord(BaseModel):
 class SentenceToken(BaseModel):
     surface: str                  # token text as it appears in the sentence
     reading: str                  # hiragana reading / furigana source
-    meaning: str | None           # None -> unavailable lookup (Req 5.4)
+    meaning: str | None           # Korean (한국어) meaning (Req 5.6); None -> unavailable lookup (Req 5.4)
     is_target: bool               # True for the target word token(s) (Req 3.2)
     contains_kanji: bool          # controls furigana display (Req 5.2)
 
@@ -1107,7 +1276,9 @@ class GeneratedSentence(BaseModel):
     created_at: datetime          # latest row = "immediately preceding review" (Req 4.3)
 ```
 
-These Pydantic models map to SQLAlchemy ORM tables in `app/models/` (migrated with Alembic). Relationships: `User 1—0..1 GeminiCredential`, `User 1—* WordEntry`, `WordEntry 1—* ReviewRecord`, `WordEntry 1—* GeneratedSentence`. A unique constraint on `(oidc_issuer, oidc_subject)` enforces one app account per Google identity (Req 9.9), and a unique constraint on `(user_id, word_form)` enforces per-collection dedupe (Req 1.4). The Gemini key is stored only as a Fernet ciphertext, which is never equal to the plaintext key, and only `key_hint` leaves the backend. The most recent `GeneratedSentence` row for a word is the "immediately preceding" sentence used for the difference check (Req 4.3).
+A word is a **New_Word** when no `ReviewRecord` row references it and a **Review_Word** when at least one does. This is derived from `review_records`, not stored, so a lapse that resets `repetitions` to 0 does not turn a word back into a New_Word.
+
+These Pydantic models map to SQLAlchemy ORM tables in `app/models/` (migrated with Alembic). Relationships: `User 1—0..1 GeminiCredential`, `User 1—* WordEntry`, `WordEntry 1—* ReviewRecord`, `WordEntry 1—* GeneratedSentence`. A unique constraint on `(oidc_issuer, oidc_subject)` enforces one app account per Google identity (Req 9.9), and a unique constraint on `(user_id, word_form)` enforces per-collection dedupe (Req 1.4). The Gemini key is stored only as a Fernet ciphertext, which is never equal to the plaintext key, and only `key_hint` leaves the backend. The most recent `GeneratedSentence` row for a word is the "immediately preceding" sentence whose trimmed `text` is used for the identity check (Req 4.3).
 
 No Google token is modeled anywhere (Req 9.12). The former `OAuthCredential` model and `oauth_credentials` table are removed.
 
@@ -1207,6 +1378,78 @@ Dropping `oidc_client_id` is chosen over keeping it. The column has no meaning i
 
 The downgrade recreates an empty `oauth_credentials`, re-adds `oidc_client_id` with `server_default=''`, restores the three-column unique constraint, and drops the two new tables. Existing user rows created under the OpenAI issuer stay in place with their words, but they cannot be reached by Google sign-in because their issuer differs. This is acceptable for the development database, and the README notes that `jvt.db` can be deleted to start fresh.
 
+### Study settings data (Requirement 11)
+
+**ORM (`app/models/user.py`).** Two columns are added to `User`. The constants live in the model module so the schema and the service import them from one place without the model depending on either.
+
+```python
+DEFAULT_NEW_WORD_LIMIT = 50
+DEFAULT_REVIEW_WORD_LIMIT = 100
+STUDY_LIMIT_MIN = 0
+STUDY_LIMIT_MAX = 1000
+
+class User(Base):
+    ...
+    new_word_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+        default=DEFAULT_NEW_WORD_LIMIT,
+        server_default=text(str(DEFAULT_NEW_WORD_LIMIT)),
+    )
+    review_word_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+        default=DEFAULT_REVIEW_WORD_LIMIT,
+        server_default=text(str(DEFAULT_REVIEW_WORD_LIMIT)),
+    )
+```
+
+The ORM `default` covers users created by `AuthService` (and by tests through `Base.metadata.create_all`). The `server_default` covers rows that existed before the migration and any raw insert (Req 11.2). `ReviewRecord` and `WordEntry` are unchanged. The "has a review" test reads `review_records.word_id`, and the existing foreign key serves it. An index on `review_records.word_id` is not added now, because the existing tables have none and a collection of a few thousand words does not need it. It can be added later without changing behavior.
+
+**API schemas (`app/schemas/study_settings.py`).**
+
+```python
+from typing import Annotated
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from app.models.user import STUDY_LIMIT_MAX, STUDY_LIMIT_MIN
+
+StudyLimit = Annotated[StrictInt, Field(ge=STUDY_LIMIT_MIN, le=STUDY_LIMIT_MAX)]
+
+class StudySettingsIn(BaseModel):
+    """PUT body (Req 11.4, 11.5). StrictInt rejects bool, float (also 5.0),
+    numeric strings, and null; both fields are required."""
+    new_word_limit: StudyLimit
+    review_word_limit: StudyLimit
+
+class StudySettingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    new_word_limit: int
+    review_word_limit: int
+```
+
+Unknown extra keys are ignored (Pydantic's default), matching the other request schemas.
+
+**Migration `c7a1e9f4b2d8_add_study_settings.py`** (Revision ID `c7a1e9f4b2d8`, `down_revision = 'd2f7e806032a'`, the current head). It uses `op.batch_alter_table` so it runs on SQLite, like the previous revision:
+
+```python
+revision: str = 'c7a1e9f4b2d8'
+down_revision: Union[str, Sequence[str], None] = 'd2f7e806032a'
+
+def upgrade() -> None:
+    with op.batch_alter_table('users', schema=None) as batch_op:
+        batch_op.add_column(sa.Column('new_word_limit', sa.Integer(), nullable=False,
+                                      server_default=sa.text('50')))
+        batch_op.add_column(sa.Column('review_word_limit', sa.Integer(), nullable=False,
+                                      server_default=sa.text('100')))
+
+def downgrade() -> None:
+    with op.batch_alter_table('users', schema=None) as batch_op:
+        batch_op.drop_column('review_word_limit')
+        batch_op.drop_column('new_word_limit')
+```
+
+Every existing user row gets 50 and 100 from the server defaults, so the NOT NULL columns need no separate backfill step. No CHECK constraint is added. The 0–1000 range is enforced at the API boundary by `StudySettingsIn`, and the only writer is `StudySettingsService.update`, which accepts only a validated `StudySettingsIn`. The downgrade drops only the two new columns, so word and review data are untouched.
+
+**Creation-order note.** `word_entries.created_at` uses `server_default=func.now()`, which SQLite stores with one-second resolution. All rows of one Anki import share one value. Session selection orders New_Words by `(created_at, id)`, so words created in the same second are ordered by UUID. The order is deterministic, but it is not insertion order inside that second. Matching Req 8.1's "creation order" exactly for bulk imports would need a monotonic column, for example an autoincrement `seq` or a per-row microsecond `created_at` set in `_entry_values`. That is left out of this change and is listed as an open item.
+
 ## LLM Structured Output: Schema, Validation, and Retry
 
 The Sentence Generation Service asks Gemini for an Example_Sentence as JSON matching the schema below. The shape is enforced with Gemini structured output (`responseMimeType: "application/json"` + `responseSchema`) and re-validated with **Pydantic** on the backend, because model output is never trusted. The Pydantic schema has per-field constraints, a 1–50 token list, and a model validator requiring at least one target token.
@@ -1276,18 +1519,18 @@ GEMINI_RESPONSE_SCHEMA = {
 
 A unit test asserts that `GEMINI_RESPONSE_SCHEMA` and `GeneratedSentenceSchema` declare the same field names and required sets, so the two cannot drift apart.
 
-**The prompt** instructs the model to (a) write a natural Japanese sentence containing the Target_Word in surface or dictionary form, (b) keep it between 1 and 50 words, (c) tokenize it into words, (d) give each token its hiragana reading and a short meaning, (e) mark the target token(s) with `is_target: true` and set `contains_kanji` per token, and (f) when a previous sentence is supplied, produce a sentence differing by at least one non-target word (Req 4.3). The previous sentence text is included in the prompt for this purpose.
+**The prompt** instructs the model to (a) write a natural Japanese sentence containing the Target_Word in surface or dictionary form, (b) keep it between 1 and 50 words, (c) tokenize it into words, (d) give each token its Japanese hiragana reading and a short meaning written in Korean (한국어), keeping `text`, `surface`, and `reading` in Japanese (Req 5.6), (e) mark the target token(s) with `is_target: true` and set `contains_kanji` per token, and (f) when a previous sentence is supplied, write a different sentence (Req 4.3). For (f), the prompt includes the previous sentence text and instructs the model to write a new sentence with a different situation or context and different wording, and not to repeat the previous sentence or merely reword it. The server-side acceptance rule stays the identity check: a candidate is discarded and retried only if its trimmed `text` is identical to the previous sentence's trimmed `text`.
 
 **Response parsing.** The adapter reads `candidates[0].content.parts[0].text` and parses it as JSON, then validates it with `GeneratedSentenceSchema`. A response with no candidates, a `promptFeedback.blockReason`, a `finishReason` other than `STOP`, invalid JSON, or a schema failure is a **discarded output** and triggers another attempt.
 
-**Validation + retry pipeline** (satisfies Req 4.1, 4.2, 4.5–4.11). One generation request has at most 4 attempts (1 initial + 3 additional) of at most 5 s each, so total attempt time is at most 20 s (Req 4.2).
+**Validation + retry pipeline** (satisfies Req 4.1–4.3, 4.5–4.11). A candidate is discarded and retried only for a parse or schema failure, a missing target, or a trimmed `text` identical to the previous sentence's trimmed `text`. One generation request has at most 2 attempts (1 initial + 1 additional) of at most 15 s each, so total attempt time is at most 30 s (Req 4.2).
 
 ```mermaid
 flowchart TD
     Start([generate called]) --> Key{"Stored key?<br/>(ApiKeyProvider)"}
     Key -->|no| Missing["Raise MissingGeminiKeyError<br/>no Gemini request (Req 4.7)"]
-    Key -->|yes| Call["POST models/{GEMINI_MODEL}:generateContent<br/>x-goog-api-key, 5 s budget (Req 4.2)"]
-    Call -->|"5 s elapsed"| Timeout["Raise GenerationTimeout<br/>(Req 4.5)"]
+    Key -->|yes| Call["POST models/{GEMINI_MODEL}:generateContent<br/>x-goog-api-key, 15 s budget (Req 4.2)"]
+    Call -->|"15 s elapsed"| Timeout["Raise GenerationTimeout<br/>(Req 4.5)"]
     Call -->|"429 / RESOURCE_EXHAUSTED"| Quota["Raise QuotaExceededError<br/>stop, no further attempts (Req 4.8)"]
     Call -->|"400 API_KEY_INVALID / 401 / 403"| Invalid["Raise InvalidGeminiKeyError<br/>stop, no further attempts (Req 4.9)"]
     Call -->|"other 4xx/5xx / transport error"| Retry
@@ -1295,14 +1538,14 @@ flowchart TD
     Parse -->|no| Retry
     Parse -->|yes| HasTarget{"Contains<br/>target? Req 4.6"}
     HasTarget -->|no| Retry
-    HasTarget -->|yes| Differs{"Differs from<br/>previous? Req 4.3"}
-    Differs -->|no| Retry
-    Differs -->|yes| OK([Return + persist GeneratedSentence])
-    Retry{"additional attempts used < 3?"} -->|yes| Call
+    HasTarget -->|yes| Same{"Trimmed text identical to<br/>previous trimmed text? Req 4.3"}
+    Same -->|yes| Retry
+    Same -->|no| OK([Return + persist GeneratedSentence])
+    Retry{"additional attempts used < 1?"} -->|yes| Call
     Retry -->|no| Fail["Raise GenerationError<br/>(Req 4.10, 4.11)"]
 ```
 
-A timeout is terminal for the request, matching Req 4.5, which requires the error message and retry control as soon as an attempt is abandoned. A response that arrives after the 5 s cutoff is dropped and never displayed. Transient provider errors (other 4xx/5xx, transport errors) use the same retry allowance as discarded outputs, and the request ends in `GenerationError` if the allowance runs out (Req 4.11). The Learner's retry control starts a new request with a fresh allowance (Req 4.12).
+A timeout is terminal for the request, matching Req 4.5, which requires the error message and retry control as soon as an attempt is abandoned. A response that arrives after the 15 s cutoff is dropped and never displayed. Transient provider errors (other 4xx/5xx, transport errors) use the same retry allowance as discarded outputs, and the request ends in `GenerationError` if the allowance runs out (Req 4.11). The Learner's retry control starts a new request with a fresh allowance (Req 4.12).
 
 The frontend maps each error code to its message, keeps the Target_Word in the session as unrated, and shows the controls described in the Review Session View.
 
@@ -1325,7 +1568,9 @@ All routes except `/api/auth/login` and `/api/auth/callback` require a valid, no
 | GET | `/api/words/import/preview/{preview_id}?note_type_id=` | Return the preview, switching to `note_type_id` when given (`.apkg` only); `200 ImportPreviewOut` | 2.8, 2.9, 2.36 |
 | POST | `/api/words/import/preview/{preview_id}/confirm` | Body `{note_type_id?, mapping: {word, reading \| null, meaning}}`; run the import in one transaction; `200 ImportSummaryOut` | 2.20–2.34, 2.36, 2.42 |
 | DELETE | `/api/words/import/preview/{preview_id}` | Cancel; idempotent and owner-only; `204` | 2.35 |
-| POST | `/api/review/sessions` | `409 {code: "gemini_key_required"}` if no key (checked first); else start session, return due words or no-due | 10.1, 8.1, 8.5 |
+| GET | `/api/study-settings` | `200 {new_word_limit, review_word_limit}` for the signed-in Learner (50 / 100 until saved). No Gemini key required | 11.1–11.3, 11.8, 11.9 |
+| PUT | `/api/study-settings` | Body `{new_word_limit, review_word_limit}`, both integers 0–1000. `200 {new_word_limit, review_word_limit}` (stored values); `422 {"detail": {"code": "invalid_study_settings", "message", "errors"}}` with nothing stored | 11.4, 11.5, 11.8, 11.9 |
+| POST | `/api/review/sessions` | `409 {code: "gemini_key_required"}` if no key (checked first); else select up to `review_word_limit` due Review_Words then up to `new_word_limit` New_Words for the current Study_Day and return them in `due_words`, or no-due | 10.1, 8.1, 8.2, 8.5, 11.4, 11.6, 11.7 |
 | POST | `/api/review/sessions/:id/words/:wordId/sentence` | Generate a sentence via Gemini with the Learner's key | 3, 4, 10.16 |
 | POST | `/api/review/sessions/:id/words/:wordId/rating` | Record rating, schedule, advance/summarize | 6, 7, 8.3, 8.4, 8.6 |
 
@@ -1361,13 +1606,24 @@ All routes except `/api/auth/login` and `/api/auth/callback` require a valid, no
 
 The confirm route parses its body inside the handler, as `POST /api/words` already does. A body that is not an object, or a `mapping` whose role values are not integers or `null`, becomes `422 invalid_mapping` with per-role errors instead of FastAPI's list-shaped `422`. The SPA would otherwise classify that response as `invalid_rating`. All four routes depend on `CurrentUser`, so a missing or revoked App_Session gets the standard `401` (Req 2.38).
 
+**Study settings routes** (`app/api/routes/study_settings.py`, registered in `main.py` as `app.include_router(study_settings.router, prefix="/api/study-settings", tags=["study-settings"])`). Both handlers depend on `CurrentUser` and on `get_study_settings_service(db) -> StudySettingsService` from `deps.py` (`StudySettingsServiceDep`). A missing, invalid, expired, or revoked App_Session gets the standard `401` before the body is read, so no settings are returned or changed (Req 11.9). Each handler passes `user.id`, never an id from the request, so a Learner can reach only their own row (Req 11.8).
+
+- **GET** returns `service.get(user.id)`.
+- **PUT parses its body by hand**, so every invalid submission returns the coded shape and never FastAPI's list-shaped `422`. The SPA's `classify()` maps a list-shaped 422 to `invalid_rating`, so that shape must not reach it from this route. The handler is `async def put_study_settings(request: Request, user: CurrentUser, service: StudySettingsServiceDep)`:
+  1. `raw = await request.body()`, then `json.loads(raw)`. A `ValueError` (empty or malformed JSON) becomes `invalid_study_settings` with an error for both fields.
+  2. A parsed value that is not a JSON object also becomes `invalid_study_settings` with an error for both fields.
+  3. `StudySettingsIn.model_validate(payload)`. A `ValidationError` becomes `invalid_study_settings` with one entry per invalid field, keyed by `loc[0]` and de-duplicated, in the order `new_word_limit`, `review_word_limit` (Req 11.5).
+  4. On success, `await run_in_threadpool(service.update, user.id, data)`, because the service uses the synchronous SQLAlchemy session. Returns `200 StudySettingsOut`.
+
+  The error body is `{"detail": {"code": "invalid_study_settings", "message": "Study limits must be whole numbers from 0 to 1000.", "errors": [{"field": "new_word_limit" | "review_word_limit", "message": "Must be a whole number from 0 to 1000."}]}}`. The messages are fixed strings and never echo the submitted value. The SPA shows its own Korean text.
+
 The sign-in start/callback pair implements the OAuth 2.0 Authorization Code + PKCE + OIDC flow. The callback rejects a bad `state` before any token exchange (Req 9.3, 9.4) and creates no App_Session on authorization denial, token-exchange failure, or ID-token validation failure (Req 9.5, 9.7, 9.10). The rating endpoint enforces reveal-before-rate server-side as well (Req 6.5) by rejecting a rating for a word whose answer the session has not marked revealed, and rejects out-of-set rating values (Req 8.6).
 
 **Key secrecy at the HTTP layer.** FastAPI's default `422` validation response echoes the offending `input`, which could leak a malformed key. `main.py` therefore registers a `RequestValidationError` handler that removes `input` and `ctx` from every error entry. `GeminiKeyIn.api_key` is a `SecretStr`. Access logging records only method, path, and status, never bodies.
 
 ## Spaced-Repetition Algorithm
 
-The Scheduler uses an SM-2 / Anki-style scheme over four discrete Difficulty_Rating levels (1 = very hard … 4 = very easy). It is a **pure function** of the rating and the word's review history (ease, repetitions, last interval), returning an interval clamped to `[1, 365]` days (Req 7.1). The next review date is `today + interval`.
+The Scheduler uses an SM-2 / Anki-style scheme over four discrete Difficulty_Rating levels (1 = very hard … 4 = very easy). It is a **pure function** of the rating and the word's review history (ease, repetitions, last interval), returning an interval clamped to `[1, 365]` days (Req 7.1). The next review date is `session Study_Day + interval`, where the session Study_Day is the `day` passed to `start_session` (Req 7.4).
 
 **Per-level base behavior**
 
@@ -1388,7 +1644,7 @@ The Scheduler uses an SM-2 / Anki-style scheme over four discrete Difficulty_Rat
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-The properties below were derived from the acceptance criteria via the prework analysis, with redundant criteria consolidated (e.g. the reveal-gating criteria and the Lookup_Panel state criteria were each merged into a single comprehensive property, and the import classification, due-date, and summary criteria 2.9 and 2.26–2.34 were merged into one accounting invariant, Property 5). For the Anki import, the name-based and positional mapping criteria (2.18, 2.19) form one property, mapping validation (2.21, 2.22) another, and the furigana word and reading criteria (2.24, 2.25) a third. The text parser and printer rules (2.10, 2.16) are checked through the round trip (2.17). Ordered file rejection, collection priority, column naming, expiry, cancel, ownership, and the import lock are covered by example and integration tests. For the Gemini and Google boundaries, the trimming and format criteria (10.5, 10.6) were merged into one property, the hint, no-leak, and no-log criteria (10.11–10.13) into one secrecy property, and the six ID-token checks (9.8, 9.10) into one acceptance property. The fixed-configuration and single-flow criteria (authorization URL scopes, state failure classes, logout, key removal, guide content) are covered by example and integration tests instead.
+The properties below were derived from the acceptance criteria via the prework analysis, with redundant criteria consolidated (e.g. the reveal-gating criteria and the Lookup_Panel state criteria were each merged into a single comprehensive property, and the import classification, due-date, and summary criteria 2.9 and 2.26–2.34 were merged into one accounting invariant, Property 5). For the Anki import, the name-based and positional mapping criteria (2.18, 2.19) form one property, mapping validation (2.21, 2.22) another, and the furigana word and reading criteria (2.24, 2.25) a third. The text parser and printer rules (2.10, 2.16) are checked through the round trip (2.17). Ordered file rejection, collection priority, column naming, expiry, cancel, ownership, and the import lock are covered by example and integration tests. For the Gemini and Google boundaries, the trimming and format criteria (10.5, 10.6) were merged into one property, the hint, no-leak, and no-log criteria (10.11–10.13) into one secrecy property, and the six ID-token checks (9.8, 9.10) into one acceptance property. The fixed-configuration and single-flow criteria (authorization URL scopes, state failure classes, logout, key removal, guide content) are covered by example and integration tests instead. For the study limits, the Study_Day definition is one property (35). The revised selection rule of Req 8.1 together with 8.5, 11.6, and 11.7 is one model-based property (36). Review/New classification by review history is kept as its own property (17), because Property 36's oracle assumes that classification. Settings acceptance, rejection, and read-back (11.3–11.5) form one property (37). The earlier Property 17, "due selection is exactly the non-future words", no longer matches Req 8.1 and is replaced. The defaults (11.2), one-settings-per-account (11.1), ownership (11.8), and the 401 path (11.9) are covered by example and integration tests.
 
 ### Property 1: Valid word is created and stored faithfully
 
@@ -1410,7 +1666,7 @@ The properties below were derived from the acceptance criteria via the prework a
 
 ### Property 4: Newly created words are due immediately
 
-*For any* valid word added on a given date, that word's next review date is on or before that date, so it is selected as a Due_Word on that date.
+*For any* valid word and any creation instant `t` (supplied through the injected clock or `today`), the created Word_Entry has `next_review_date == study_day(t)` and no ReviewRecord. It is therefore a Due_Word on that Study_Day and a New_Word that a session started on that Study_Day selects whenever fewer than `new_word_limit` older New_Words exist.
 
 **Validates: Requirements 1.5**
 
@@ -1419,7 +1675,7 @@ The properties below were derived from the acceptance criteria via the prework a
 *For any* parsed deck (one or more note types), any selected note type, any valid Field_Mapping, and any existing Word_Collection, running the import gives a summary and collection that satisfy all of the following:
 - `created + skipped_missing_field + skipped_duplicate + skipped_invalid_length` equals the number of included notes, which are the notes of the selected note type (all rows for a text deck).
 - Each included note gets exactly one outcome, by the first rule that applies in the order missing field → invalid length → duplicate (against existing entries and earlier notes of the same import) → created.
-- The created Word_Entries have pairwise distinct word forms that are disjoint from the existing ones. They equal the resolved `(word_form, reading, meaning)` of the created notes, have `next_review_date` equal to the import date, have default scheduling state, and have no review records.
+- The created Word_Entries have pairwise distinct word forms that are disjoint from the existing ones. They equal the resolved `(word_form, reading, meaning)` of the created notes, have `next_review_date` equal to the Study_Day returned by the service's `today()` at the confirm, have default scheduling state, and have no review records.
 - `skipped` equals the first `min(20, total skipped)` skipped notes in file order, with `word_form` `null` exactly when the resolved word form is empty.
 
 **Validates: Requirements 2.9, 2.26, 2.27, 2.28, 2.29, 2.30, 2.33, 2.34**
@@ -1450,15 +1706,15 @@ The properties below were derived from the acceptance criteria via the prework a
 
 ### Property 10: Accepted sentence contains the target within the retry budget
 
-*For any* sequence of Gemini outputs, generation accepts the first output that is schema-valid and contains the Target_Word, performing at most 3 additional attempts; if no output within the budget contains the target, generation yields a generation error (and no sentence is accepted).
+*For any* sequence of Gemini outputs, generation accepts the first output that is schema-valid and contains the Target_Word, performing at most 1 additional attempt; if no output within the budget contains the target, generation yields a generation error (and no sentence is accepted).
 
 **Validates: Requirements 4.1, 4.6, 4.10**
 
-### Property 11: New sentence differs from the previous by a non-target word
+### Property 11: New sentence is not identical to the previous one
 
-*For any* previous sentence and candidate sentence, the candidate is accepted only if it differs from the previous sentence in at least one word other than the Target_Word.
+*For any* previous sentence and candidate sentence, the candidate is discarded and retried exactly when its full sentence text, after trimming leading and trailing whitespace, is identical to the previous sentence's trimmed text; every other candidate passes this check.
 
-**Validates: Requirements 4.3**
+**Validates: Requirements 4.3, 4.6**
 
 ### Property 12: Accepted sentence length is between 1 and 50 words
 
@@ -1486,25 +1742,25 @@ The properties below were derived from the acceptance criteria via the prework a
 
 ### Property 16: Stored next review date matches the computed schedule
 
-*For any* successful rating recorded on a given date, the stored next review date equals that date plus the computed interval.
+*For any* successful rating recorded in a session started on Study_Day `d`, the stored next review date equals `d` plus the computed interval.
 
 **Validates: Requirements 7.4**
 
-### Property 17: Due selection is exactly the non-future words
+### Property 17: Review/New classification follows review history
 
-*For any* Word_Collection and current date, starting a session selects exactly the Word_Entries whose next review date is on or before the current date.
+*For any* Word_Collection in which each word has zero or more ReviewRecords and arbitrary scheduler state (including `repetitions == 0` and `interval_days > 0` after a lapse), and for limits at least the collection size, starting a session on any Study_Day `d` selects as Review_Words exactly the words that have at least one ReviewRecord and `next_review_date <= d`, and as New_Words exactly the words that have no ReviewRecord, whatever their `next_review_date`, `repetitions`, or `interval_days`.
 
 **Validates: Requirements 8.1**
 
-### Property 18: Session presents each due word once, one at a time
+### Property 18: Session presents each selected word once, one at a time, in selection order
 
-*For any* Review_Session, while unreviewed Due_Words remain exactly one Target_Word is presented at a time, each Due_Word is presented exactly once, and recording a rating for a non-final word advances to an unreviewed Due_Word.
+*For any* Review_Session, while unreviewed words remain exactly one Target_Word is presented at a time, the words are presented in the order of the session's word list (Review_Words, then New_Words), each listed word is presented exactly once, and recording a rating for a non-final word advances to the next unreviewed word of the list.
 
 **Validates: Requirements 8.2, 8.3**
 
 ### Property 19: Session summary counts are exact
 
-*For any* completed Review_Session, the summary's total reviewed count equals the number of Due_Words selected, and the per-rating counts equal the tally of ratings the Learner submitted.
+*For any* completed Review_Session, the summary's total reviewed count equals the length of the session's own word list (after the limits were applied), and the per-rating counts equal the tally of ratings the Learner submitted.
 
 **Validates: Requirements 8.4**
 
@@ -1537,8 +1793,8 @@ The properties below were derived from the acceptance criteria via the prework a
 *For any* sequence of mocked `generateContent` responses drawn from {valid sentence, discarded output, quota rejection (429 or `RESOURCE_EXHAUSTED`), invalid-key rejection (400 `API_KEY_INVALID`, 401, 403 `PERMISSION_DENIED`), transient error (other 4xx, 5xx, transport error)}:
 - the adapter sends requests in order until the first terminal outcome;
 - a quota rejection raises `QuotaExceededError` and an invalid-key rejection raises `InvalidGeminiKeyError`, with no request after the rejecting one, so a rejection as the first response means exactly one request;
-- discarded outputs and transient errors lead to another attempt while fewer than 3 additional attempts have been used;
-- if the budget runs out, `GenerationError` is raised after exactly 4 requests;
+- discarded outputs and transient errors lead to another attempt while fewer than 1 additional attempt has been used;
+- if the budget runs out, `GenerationError` is raised after exactly 2 requests;
 - a valid sentence within the budget is returned.
 
 **Validates: Requirements 4.8, 4.9, 4.11**
@@ -1631,6 +1887,39 @@ the following hold:
 
 **Validates: Requirements 2.31**
 
+### Property 35: Study_Day follows the 07:00 KST boundary
+
+*For any* datetime `t`, either aware in any fixed UTC offset or naive, let `u` be `t` converted to UTC, with a naive `t` read as UTC:
+- `study_day(t)` equals the KST calendar date of `u` when the KST wall time of `u` is 07:00:00 or later, and the KST calendar date of `u` minus one day otherwise.
+- Equivalently, `study_day(t) == (u + timedelta(hours=2)).date()`. This is the model oracle, since 07:00 KST is 22:00 UTC.
+- `study_day(t)` equals `study_day(t.replace(tzinfo=UTC))` for a naive `t`, and two representations of the same instant in different zones give the same result.
+- `current_study_day(clock)` equals `study_day(clock())`.
+
+**Validates: Requirements 1.5, 2.26, 8.1**
+
+### Property 36: Session selection is capped, review-first, disjoint, and deterministic
+
+*For any* Word_Collection of one Learner (each word with random `next_review_date`, `created_at` drawn so that ties occur, and zero or more ReviewRecords), any other Learner's words, any Study_Day `d`, and any `new_word_limit` and `review_word_limit` in `0..1000` stored on the User row, let the oracle be:
+- `R` = the Learner's words with at least one ReviewRecord and `next_review_date <= d`, sorted by `(next_review_date, created_at, id)`, truncated to `review_word_limit`;
+- `N` = the Learner's words with no ReviewRecord, sorted by `(created_at, id)`, truncated to `new_word_limit`.
+
+Then `start_session(user_id, d)`, with a key present:
+- returns `NoDueWords` and registers no session exactly when `R + N` is empty, which includes both limits being 0;
+- otherwise returns `due_words` whose ids equal `R + N` in that order, so every Review_Word precedes every New_Word, at most `review_word_limit` Review_Words and at most `new_word_limit` New_Words are included, and no other Learner's word appears;
+- never repeats an id, since `R` and `N` are disjoint;
+- returns the same id list when called again on the same database state and `d`.
+
+**Validates: Requirements 8.1, 8.2, 8.5, 11.4, 11.6, 11.7**
+
+### Property 37: Study settings are accepted exactly when both values are integers from 0 to 1000
+
+*For any* PUT body, whether malformed JSON, a non-object JSON value, an object with each field missing or set to an int (in and out of `0..1000`, including -1 and 1001), a bool, a float (including integral floats such as `5.0`), a numeric string, or `null`, and for any previously stored pair:
+- the request succeeds with `200` if and only if both `new_word_limit` and `review_word_limit` are JSON integers (not bool) in `0..1000`;
+- after success, the response and a following `GET /api/study-settings` both return exactly the submitted pair;
+- after a rejection, the status is `422`, `detail.code == "invalid_study_settings"`, the `errors` fields are exactly the set of invalid or missing fields (both fields for malformed JSON or a non-object body), and a following `GET` returns the previously stored pair unchanged.
+
+**Validates: Requirements 11.3, 11.4, 11.5**
+
 ## Error Handling
 
 | Condition | Requirement | Handling |
@@ -1653,18 +1942,22 @@ the following hold:
 | Upload or confirm without a valid App_Session | 2.38 | 401 before the body is read; no preview; no write. |
 | Process restart with previews pending | 2.36, 2.40 | Previews are lost, so a later confirm gets 410 `preview_expired`. Stale `jvt-anki-*` temp dirs are removed at startup. |
 | No sentence available for target | 3.5 | Present target without sentence + "no example available" indicator. |
-| Sentence generation timeout (>5s) | 4.2, 4.5 | `GenerationTimeout` → 502 `generation_timeout`; late response discarded; word retained; generation-error message + retry control. |
-| LLM output invalid / missing target after 3 additional attempts | 4.6, 4.10 | `GenerationError` → 502 `generation_failed`; generation-error message + retry control; word retained. |
+| Sentence generation timeout (>15s) | 4.2, 4.5 | `GenerationTimeout` → 502 `generation_timeout`; late response discarded; word retained; generation-error message + retry control. |
+| LLM output invalid / missing target / trimmed text identical to the previous sentence's trimmed text, after 1 additional attempt | 4.3, 4.6, 4.10 | `GenerationError` → 502 `generation_failed`; generation-error message + retry control; word retained. |
 | No stored Gemini_API_Key at generation | 4.7, 10.15 | `MissingGeminiKeyError` → 409 `gemini_key_required`; no Gemini request; key-setup message + control opening the Key_Setup_Guide; word retained. |
 | Gemini quota exhausted during generation (429 / `RESOURCE_EXHAUSTED`) | 4.8 | `QuotaExceededError` → 429 `gemini_quota_exceeded`; no further attempts; "quota exhausted, wait and retry later" message; word retained. |
 | Gemini rejects the stored key (400 `API_KEY_INVALID`, 401, 403 `PERMISSION_DENIED`) | 4.9 | `InvalidGeminiKeyError` → 422 `invalid_gemini_key`; no further attempts; invalid-key message + control opening the key replacement flow; word retained. |
-| Gemini unreachable / other error | 4.11 | Retried within the 3-additional-attempt allowance; then `GenerationError` → 502 `generation_failed`; retry control; word retained. |
+| Gemini unreachable / other error | 4.11 | Retried within the 1-additional-attempt allowance; then `GenerationError` → 502 `generation_failed`; retry control; word retained. |
 | Non-target lookup meaning undeterminable | 5.4 | Show unavailable-lookup message; clear prior panel content. |
 | Rating attempted before reveal | 6.5 | Reject (server + client); word stays unrated. |
 | Rating save failure | 6.6 | Word stays unrated; "rating not saved" error; no schedule change. |
 | Invalid rating value | 8.6 | Reject; "invalid rating" message; retain current Target_Word. |
 | Scheduling write failure | 7.5 | Transaction rolled back; previous next review date retained; "scheduling not saved" error. |
-| No due words at session start | 8.5 | "No words due" message; no session created. |
+| Empty selection at session start (no due Review_Word and no New_Word, or both limits 0) | 8.5, 11.6, 11.7 | `200 NoDueWords`; no session registered; the existing "지금 복습할 단어가 없습니다" screen. |
+| Study settings body not JSON, not an object, a field missing, or a value that is not an integer in 0–1000 (bool, float, string, null, out of range) | 11.5 | Parsed in the handler; `422 {"detail": {"code": "invalid_study_settings", "message", "errors": [{field, message}]}}` naming each invalid field; nothing stored, both previous values unchanged. UI shows each error under its input. The client never sends an invalid pair, because 저장 is disabled while an input fails `validateStudyLimit`. |
+| Study settings database write fails | 11.4 | `db.rollback()`; 500; both previous values unchanged. UI: "저장하지 못했어요. 잠시 후 다시 시도해 주세요." |
+| Study settings request without a valid App_Session | 11.9 | 401 before the body is read; no settings returned; nothing modified; SPA shows "Sign in with Google". |
+| Host has no IANA time zone database | 1.5, 8.1 | The `tzdata` dependency supplies `Asia/Seoul`. Without either, `ZoneInfo` raises `ZoneInfoNotFoundError` when `study_day.py` is imported, so the app fails at startup instead of silently using the server's local date. |
 | Session start with no stored key | 10.1 | 409 `gemini_key_required` (checked before due selection); SPA opens the Key_Setup_Guide; no session created. |
 | OAuth `state` missing / mismatched / expired (>10 min) / already used | 9.3, 9.4 | `AuthStateError`; no token exchange; no App_Session; "login could not be verified" + retry control. |
 | Authorization denied / cancelled at Google (`error` param) | 9.5 | `AuthorizationDeniedError`; no App_Session; "sign-in was not completed" + retry control. |
@@ -1696,10 +1989,11 @@ The strategy pairs **property-based tests** (universal invariants, 100+ generate
 - Library: **Hypothesis** (Python), run via **pytest**, configured for a **minimum of 100 iterations** per property (`@settings(max_examples=100)`).
 - Each property test implements exactly one property from the Correctness Properties section and carries a tag comment of the form:
   `# Feature: japanese-vocab-trainer, Property {number}: {property_text}`
-- Coverage: Properties 1–34. For the Anki import, the highest-value targets are **Property 27 (text round trip)**, **Property 5 (accounting)**, **Property 33 (zip safety)**, and **Property 34 (atomicity)**. Properties 27–32 test pure functions with no I/O. Property 33 builds zips in memory. Properties 5 and 34 run against in-memory SQLite. The highest-value targets overall are **Property 15 (scheduler monotonicity)**, **Property 13 (interval bounds)**, **Property 11 (sentence difference)**, **Property 10 (target-presence retry)**, **Property 2 (field-exact validation errors)**, **Property 24 (Gemini error mapping)**, and **Property 25 (ID-token validation)**. The pure `scheduler.py`, the Pydantic-based LLM-output validator, the key helpers, the error classifiers, and `validate_google_id_token` are isolated, side-effect-free units, which makes these tests fast and deterministic.
+- Coverage: Properties 1–37. For the study limits, Property 35 tests the pure `study_day` helper with no I/O. Properties 17 and 36 run `ReviewService.start_session` against in-memory SQLite and compare it with a pure Python oracle (sort and slice). Property 37 runs the PUT and GET routes through FastAPI's `TestClient` on in-memory SQLite with an overridden `CurrentUser`. For the Anki import, the highest-value targets are **Property 27 (text round trip)**, **Property 5 (accounting)**, **Property 33 (zip safety)**, and **Property 34 (atomicity)**. Properties 27–32 test pure functions with no I/O. Property 33 builds zips in memory. Properties 5 and 34 run against in-memory SQLite. The highest-value targets overall are **Property 15 (scheduler monotonicity)**, **Property 13 (interval bounds)**, **Property 11 (new sentence not identical to the previous one)**, **Property 10 (target-presence retry)**, **Property 2 (field-exact validation errors)**, **Property 24 (Gemini error mapping)**, and **Property 25 (ID-token validation)**. The pure `scheduler.py`, the Pydantic-based LLM-output validator, the key helpers, the error classifiers, and `validate_google_id_token` are isolated, side-effect-free units, which makes these tests fast and deterministic.
 - Strategies (Hypothesis generators):
   - word inputs across and over the length bounds; difficulty ratings 1–4; arbitrary review histories (ease, repetitions, last interval); collections with varied next-review dates;
   - token lists with varied length, `is_target`, `contains_kanji`, and None meanings;
+  - previous/candidate sentence-text pairs for Property 11: identical texts, texts identical except for added leading or trailing whitespace (including U+3000), and texts that differ by one character, by internal whitespace, or by one token;
   - sequences of Gemini responses (valid, discarded, quota, invalid-key, transient);
   - Gemini key candidates: well-formed keys from the regex alphabet, wrapped in random whitespace, plus near-misses (38/40 chars, wrong prefix, out-of-alphabet characters, empty or whitespace-only strings);
   - verification outcomes: status codes with Google RPC error bodies, timeouts, transport errors;
@@ -1711,6 +2005,9 @@ The strategy pairs **property-based tests** (universal invariants, 100+ generate
   - Note type lists with counts in `1..3` (to force ties) and names including Hangul, kana, and case variants.
   - Zip archives built in memory with `zipfile.ZipFile(io.BytesIO(), "w")`: a valid tiny collection, random safe names (`0`, `media`, `a/b.txt`), and injected unsafe names (`/etc/x`, `C:x`, `a/../b`, `..`, `a\\b`).
   - Decks for accounting and atomicity: up to 40 notes per deck with deliberately empty, whitespace-only, over-length (51/101/501 characters), repeated, and furigana-annotated values; existing collections that overlap the deck's word forms; failure points `k` from 0 to the number of rows to create.
+  - Instants for Property 35: `st.datetimes()` both naive and with `timezones=st.sampled_from([UTC, ZoneInfo("Asia/Seoul"), fixed offsets from -12 h to +14 h])`, plus instants drawn within ±2 seconds of 22:00:00 UTC (07:00 KST) and of 15:00:00 UTC (KST midnight) so the boundary and the date change are hit often.
+  - Collections for Properties 17 and 36: 0–25 words per Learner plus 0–5 words of a second Learner; `next_review_date` within ±10 days of `d`; `created_at` drawn from a few distinct seconds so ties are common; 0–3 ReviewRecords per word with `repetitions` and `interval_days` drawn independently of the record count (so lapsed words with `repetitions == 0` and records occur); limits drawn from `{0, 1, 2, 3, collection size, 1000}`.
+  - Bodies for Property 37: `st.one_of` over JSON objects with each field drawn from integers in `-5..1005`, `st.booleans()`, floats (including `float(n)` for valid `n`), numeric strings, `None`, or absent; plus non-object JSON (lists, numbers, strings, `null`) and malformed byte strings.
 
 ### Example / unit tests
 
@@ -1727,6 +2024,18 @@ These cover specific scenarios and failure branches that are not universal. They
 - **Callback state failures (9.3, 9.4):** missing, mismatched, expired, and replayed state each produce zero token-endpoint calls.
 - **Callback provider failures:** `error=access_denied` ends the attempt (9.5). Token-exchange timeout, network error, error response, and a response without `id_token` each reject the login (9.7).
 - **Logout (9.13):** a token used after logout gets 401.
+- **Study_Day and study limits:**
+  - `study_day` examples: `2025-06-02T21:59:59.999999Z` → 2 June, `2025-06-02T22:00:00Z` → 3 June, `2025-06-03T06:59:59+09:00` → 2 June, `2025-06-03T07:00:00+09:00` → 3 June, and a naive `2025-06-02 22:00:00` → 3 June (1.5, 8.1).
+  - `WordService.add_word` without `today` and `AnkiImportService` built without `today` both use `current_study_day()`. A test monkeypatches `app.services.study_day._utc_now` to 06:30 KST on 3 June and checks `next_review_date == 2 June` (1.5, 2.26).
+  - The review route passes `current_study_day()` to `start_session` (8.1).
+  - A new user row reads 50 / 100 through the ORM and through `GET /api/study-settings` (11.2, 11.3).
+  - Migration `c7a1e9f4b2d8`: on a SQLite database at `d2f7e806032a` with one user row, `alembic upgrade head` gives that row 50 / 100 and NOT NULL columns, and `alembic downgrade d2f7e806032a` removes both columns with the user and word rows intact (11.1, 11.2).
+  - A lapsed word (one ReviewRecord, `repetitions == 0`, `next_review_date` in the future) is not selected, and the same word with `next_review_date <= d` is selected as a Review_Word, not a New_Word (8.1).
+  - A New_Word whose `next_review_date` is after `d` is still selected (8.1).
+  - Limits 0 / 0 with a non-empty collection return `NoDueWords` (8.5).
+  - The key gate still runs first: with no key and limits 0 / 0, the result is `MissingGeminiKeyError`, not `NoDueWords` (10.1).
+  - `classify(422, {"code": "invalid_study_settings", ...})` gives `code === 'invalid_study_settings'` with `fieldErrors`, not `invalid_rating` (`client.test.ts`).
+- **Existing review-start tests.** `tests/unit/test_review_service_start.py` asserted that only `next_review_date <= today` words are selected. Under revised Req 8.1, a word with no ReviewRecord is a New_Word and is selected whatever its date, so the cases with future-dated unreviewed words must be updated to expect them in the New_Word group. The positional `start_session(user_id, day)` call shape is kept, so the other callers (including `test_review_service_rating.py`) need no change.
 - **Anki import fixtures.** `tests/fixtures/anki_builders.py` builds every package in code, so no binary fixture is committed:
   - `build_legacy_apkg(note_types, notes, *, name="collection.anki2", extra_entries=())` creates a schema-11 SQLite file with tables `col` (one row whose `models` column holds the JSON `{id: {"id", "name", "flds": [{"name", "ord"}]}}`) and `notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)`, with `flds` joined by `\x1f`. It zips the file with `media` = `{}` and any extra entries.
   - `build_anki21b_apkg(note_types, notes, extra_entries=())` creates `notetypes (id, name COLLATE unicase, mtime_secs, usn, config)`, `fields (ntid, ord, name COLLATE unicase, config)`, and `notes`. The custom collation is registered in the builder connection so the DDL can be executed. It compresses the file with `zstandard.ZstdCompressor().compress()` into `collection.anki21b` and adds a legacy `collection.anki2` stub with a different single note, so the priority rule is visible.
@@ -1758,7 +2067,7 @@ These cover specific scenarios and failure branches that are not universal. They
 
 These cover behavior across the mocked provider and persistence boundaries, using 1–3 examples rather than property iteration:
 
-- **Time budget (4.2):** a simulated slow Gemini response is abandoned at 5 s and is not displayed.
+- **Time budget (4.2):** a simulated slow Gemini response is abandoned at 15 s and is not displayed.
 - **Per-user key usage (10.16):** two users with different keys; the mocked transport records the `x-goog-api-key` of each `generateContent` call and checks it is the caller's own key.
 - **Key verification request (10.7):** exactly one `GET v1beta/models?pageSize=1` with the key header; a concurrent PUT gets 409.
 - **Google sign-in end to end (9.6, 9.9, 9.12):**
@@ -1772,6 +2081,10 @@ These cover behavior across the mocked provider and persistence boundaries, usin
   - No Gemini key is stored in any of these tests.
 - **Import performance (2.6, 2.32):** a generated 20,000-note anki21b deck and a 20,000-row text deck give a preview within 10 s and a confirm within 30 s on the CI machine. These tests are marked `slow`.
 - **Session flow:** end-to-end session flow against a test database.
+- **Study settings end to end (11.4, 11.8, 11.9):**
+  - Learner A saves `{new_word_limit: 1, review_word_limit: 1}`; A's next `POST /api/review/sessions` returns at most one Review_Word and one New_Word, while Learner B, still on 50 / 100, gets the full selection and B's stored values are unchanged.
+  - `GET` and `PUT /api/study-settings` return 401 with no data for missing, invalid, expired, and revoked sessions, and a rejected PUT leaves the stored row unchanged. These routes are added to the auth-protected route list in the existing 401 test.
+  - Neither route needs a Gemini key.
 - **Configuration smoke (10.17):** `Settings` exposes no Gemini key field, and the app starts with the documented env vars.
 
 ### UI tests
@@ -1791,6 +2104,14 @@ UI tests remain on the **React/TypeScript** side (the frontend stack is unchange
   - Replace and remove work.
   - It opens automatically after sign-in when `/me` reports no key.
 - **Review view:** `gemini_key_required`, `invalid_gemini_key`, and `gemini_quota_exceeded` each render their message and the matching control.
+- **StudySettings view (Req 11.3–11.5)** (`StudySettings.test.tsx`):
+  - With mocked `getStudySettings` returning 50 / 100, it renders the inputs labelled 신규 단어 and 복습 단어 with those values.
+  - `validateStudyLimit` accepts "0", "1000", and "50", and rejects "", "-1", "1001", "1.5", "1e2", and "abc". Each rejected value shows "0부터 1000 사이의 정수를 입력하세요" under its input and disables 저장.
+  - 저장 calls `putStudySettings` with numbers, is disabled while pending, and shows "저장했어요. 다음 복습 세션부터 적용돼요." on success.
+  - A mocked `invalid_study_settings` error with `fieldErrors` for `review_word_limit` shows the message under 복습 단어 only.
+  - A load failure shows the retry control.
+- **App shell:** the "학습 설정" header button (`data-testid="header-settings-entry"`) sits after the Gemini key entry, opens the StudySettings view, and gets `aria-current="page"` while that view is shown.
+- **Endpoints:** `endpoints.test.ts` checks that `getStudySettings` sends `GET /api/study-settings` and `putStudySettings` sends `PUT` with a JSON body of both fields.
 - **Add Word tabs and ImportDeck (Req 2):**
   - The tabs switch between the form and the import panel.
   - The file input accepts `.apkg,.txt,.tsv`. A dropped `.colpkg` or a file over 50 MB shows its message without calling `createImportPreview`.

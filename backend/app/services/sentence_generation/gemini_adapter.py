@@ -6,8 +6,8 @@ the ``x-goog-api-key`` header. There is no developer-held key (Req 10.16).
 
 Pipeline per request (Req 4.1-4.11):
 
-- At most ``1 + MAX_RETRIES`` (= 4) attempts. Each attempt is one
-  ``POST .../models/{model}:generateContent`` bounded at 5 s by
+- At most ``1 + MAX_RETRIES`` (= 2) attempts. Each attempt is one
+  ``POST .../models/{model}:generateContent`` bounded at 15 s by
   :func:`asyncio.wait_for`. A timeout ends the request with
   :class:`GenerationTimeout`, and the late response is dropped (Req 4.2, 4.5).
 - A 429 / ``RESOURCE_EXHAUSTED`` response raises :class:`QuotaExceededError`
@@ -16,8 +16,9 @@ Pipeline per request (Req 4.1-4.11):
 - Other 4xx/5xx responses, transport errors, and discarded outputs (no
   candidates, a ``promptFeedback.blockReason``, a ``finishReason`` other than
   ``STOP``, invalid JSON, a schema failure, no target token, 0 or more than 50
-  tokens, or no new non-target word) use the retry allowance. Running out of
-  it raises :class:`GenerationError` (Req 4.6, 4.10, 4.11).
+  tokens, or a trimmed text identical to the previous sentence's) use the
+  retry allowance. Running out of it raises :class:`GenerationError`
+  (Req 4.6, 4.10, 4.11).
 
 Secrecy (Req 10.13): the key is never logged or put in an exception message.
 httpx errors are re-raised as this module's own fixed-message exception types
@@ -55,8 +56,8 @@ if TYPE_CHECKING:
 
 GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_MODEL: str = "gemini-flash-lite-latest"
-TIME_BUDGET_SECONDS: float = 5.0
-MAX_RETRIES: int = 3
+TIME_BUDGET_SECONDS: float = 15.0
+MAX_RETRIES: int = 1
 
 # Model IDs are interpolated into the URL path, so only allow the characters
 # Gemini model IDs actually use.
@@ -71,12 +72,14 @@ SYSTEM_INSTRUCTION: str = "\n".join(
         "or in an inflected form whose dictionary form is the target word.",
         "- Split the sentence into between 1 and 50 word tokens. Joining the "
         "token surfaces must reproduce the sentence text.",
-        "- For each token give its hiragana reading and a short English meaning.",
+        "- For each token give its hiragana reading and a short Korean (한국어) meaning.",
+        "- Write every token meaning in Korean (한국어). Keep the sentence text, "
+        "surface, and reading in Japanese.",
         "- Set is_target to true only for the token(s) that are the target word.",
         "- Set contains_kanji to true for tokens that contain kanji.",
-        "- If a previous sentence is given, the new sentence must use at least "
-        "one word, other than the target word, that does not appear in the "
-        "previous sentence.",
+        "- If a previous sentence is given, write a different sentence: use a "
+        "different situation or context and different wording. Do not repeat "
+        "the previous sentence or merely reword it.",
     ]
 )
 
@@ -153,14 +156,10 @@ def parse_sentence(text: str) -> GeneratedSentence | None:
 def differs_from_previous(
     candidate: GeneratedSentence, previous: GeneratedSentence | None
 ) -> bool:
-    """Req 4.3: some non-target word of ``candidate`` is absent from ``previous``."""
+    """Req 4.3: the trimmed ``candidate`` text is not identical to ``previous``'s."""
     if previous is None:
         return True
-    previous_words = {token.surface for token in previous.tokens}
-    return any(
-        not token.is_target and token.surface not in previous_words
-        for token in candidate.tokens
-    )
+    return candidate.text.strip() != previous.text.strip()
 
 
 class GeminiAdapter(SentenceGenerationService):

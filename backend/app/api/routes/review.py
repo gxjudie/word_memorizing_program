@@ -28,8 +28,6 @@ sentence service and never reaches the client (Req 10.12, 10.16).
 
 from __future__ import annotations
 
-from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -64,6 +62,7 @@ from app.services.sentence_generation.base import (
     SentenceGenerationError,
     SentenceGenerationService,
 )
+from app.services.study_day import current_study_day
 
 __all__ = ["router"]
 
@@ -145,7 +144,7 @@ def start_session(
     or a :class:`NoDueWords` marker (still ``200``) when nothing is due.
     """
     try:
-        return service.start_session(user.id, date.today())
+        return service.start_session(user.id, current_study_day())
     except MissingGeminiKeyError as exc:
         raise _generation_http_error(exc) from None
 

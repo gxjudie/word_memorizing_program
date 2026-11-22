@@ -12,7 +12,8 @@ This service owns the business rules for building a Learner's Word_Collection:
   form is unique. An exact match raises ``DuplicateError`` and leaves the
   existing entry untouched — nothing is written.
 * **Due-today (Req 1.5).** A freshly created word's ``next_review_date`` is set
-  to the current date, so it is immediately a Due_Word.
+  to the current Study_Day (``current_study_day()``, 07:00 KST boundary), so
+  it is immediately a Due_Word.
 
 The service takes a SQLAlchemy ``Session`` and contains no HTTP concerns, so it
 is testable without a web server (see the layer separation in the design).
@@ -28,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.models.word_entry import WordEntry
 from app.schemas.word import WordInput
+from app.services.study_day import current_study_day
 
 __all__ = ["WordService", "DuplicateError"]
 
@@ -73,8 +75,8 @@ class WordService:
                 that start from raw data should construct ``WordInput`` so a
                 ``pydantic.ValidationError`` naming each offending field is
                 raised before this method is reached (Property 2).
-            today: The current date, injected for testability. Defaults to
-                ``date.today()`` when omitted.
+            today: The current Study_Day, injected for testability. Defaults
+                to ``current_study_day()`` (07:00 KST boundary) when omitted.
 
         Returns:
             The persisted ``WordEntry``, with ``next_review_date`` set to
@@ -85,7 +87,7 @@ class WordService:
                 exists for this user (Req 1.4). The existing entry is left
                 unmodified and nothing is written.
         """
-        creation_date = today if today is not None else date.today()
+        creation_date = today if today is not None else current_study_day()
 
         # Exact-match dedupe within this Learner's collection (Req 1.4). The
         # (user_id, word_form) unique constraint is the backstop; this check

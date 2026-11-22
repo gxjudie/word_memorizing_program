@@ -770,6 +770,26 @@
         "executionId": "3782061b-5aff-4923-8c36-f811842d9998",
         "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
         "timestamp": 1794730327087
+      },
+      {
+        "executionId": "7df4169b-2dc6-4975-a9a1-d6cf6ef998a1",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795067314995
+      },
+      {
+        "executionId": "7df4169b-2dc6-4975-a9a1-d6cf6ef998a1",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795067439879
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795330474188
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795330656825
       }
     ],
     "8.1 Implement the Google OAuth/OIDC boundary and Auth Service": [
@@ -1087,6 +1107,132 @@
         "executionId": "c30c3e27-8125-4ee8-8981-7c684f257a73",
         "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
         "timestamp": 1794737246736
+      }
+    ],
+    "19.1 Add the pure Study_Day helper and use it for every \"today\"": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331608972
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331622306
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331823753
+      }
+    ],
+    "19.3 Add the Study_Settings columns and migration": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609017
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331622755
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331824735
+      }
+    ],
+    "19.4 Implement capped, review-first selection in `ReviewService.start_session`": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609050
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331832155
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332038805
+      }
+    ],
+    "19.6 Implement `StudySettingsService` and the study-settings schemas": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609086
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331832857
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332039782
+      }
+    ],
+    "19.8 Implement the study-settings routes and wiring": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609120
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332040403
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332187486
+      }
+    ],
+    "19.10 Build the frontend study-settings client and the 학습 설정 view": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609157
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332188270
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332368074
+      }
+    ],
+    "20. Checkpoint - study limits complete": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795331609201
+      },
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332369249
+      },
+      {
+        "executionId": "5d9e65a7-993d-4401-b917-2b2b51f6e507",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332402874
+      }
+    ],
+    "19. Implement per-session study limits": [
+      {
+        "executionId": "32f3b2b1-43d8-44e6-8507-368def933fde",
+        "chatSessionId": "sess_f87670f1-be21-4eb0-b1f3-a89b56ed483c",
+        "timestamp": 1795332368111
       }
     ]
   }

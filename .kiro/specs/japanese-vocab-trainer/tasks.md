@@ -114,31 +114,32 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - **Auth-model update (Google + Gemini BYOK):** reopened. `OpenAIAdapter` (`openai_adapter.py`, Responses API on the plan-usage token) is replaced by `GeminiAdapter`; the existing validate/retry checks carry over.
     - Create `app/services/sentence_generation/gemini_adapter.py` and delete `openai_adapter.py`: inject an `ApiKeyProvider`, an `httpx.AsyncClient`, and the model ID (`GEMINI_MODEL`); call the provider **once per generation request** so `MissingGeminiKeyError` propagates before any HTTP request; each attempt is one `POST https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent` with the `x-goog-api-key` header and a body carrying `systemInstruction`, the user prompt (target + previous sentence), and `generationConfig = {responseMimeType: "application/json", responseSchema: GEMINI_RESPONSE_SCHEMA}`
     - Add `GEMINI_RESPONSE_SCHEMA` (OpenAPI subset mirroring `GeneratedSentenceSchema`) to `app/schemas/sentence.py`
-    - Parse `candidates[0].content.parts[0].text` as JSON and re-validate with `GeneratedSentenceSchema`; treat no candidates, a `promptFeedback.blockReason`, a `finishReason` other than `STOP`, invalid JSON, or a schema failure as a discarded output; keep target presence, difference-from-previous (at least one non-target word), and 1–50 tokens; retry up to 3 additional attempts, then raise `GenerationError`
-    - Bound each attempt at 5 s with `asyncio.wait_for` around the httpx call; a timeout raises `GenerationTimeout` and ends the request, and a late response is dropped
+    - The `systemInstruction` asks for each token's `meaning` in Korean (한국어), while `text`, `surface`, and `reading` stay Japanese; when a previous sentence exists for the word, the user prompt includes it and asks for a different sentence
+    - Parse `candidates[0].content.parts[0].text` as JSON and re-validate with `GeneratedSentenceSchema`; treat no candidates, a `promptFeedback.blockReason`, a `finishReason` other than `STOP`, invalid JSON, or a schema failure as a discarded output; keep target presence and 1–50 tokens; discard a candidate as identical to the previous sentence only when its `text`, after trimming leading and trailing whitespace, equals the trimmed `text` of the immediately preceding `GeneratedSentence` for that word (any other difference is accepted); allow 1 additional attempt per generation request (at most 2 attempts), then raise `GenerationError`
+    - Bound each attempt at 15 s with `asyncio.wait_for` around the httpx call; a timeout raises `GenerationTimeout` and ends the request, and a late response is dropped
     - Create `app/services/gemini_errors.py` with the pure `classify_generation_failure(status, body)`: 429 / `RESOURCE_EXHAUSTED` → `QuotaExceededError` (stop, no further attempts); 400 `API_KEY_INVALID`, 401, 403 `PERMISSION_DENIED` → `InvalidGeminiKeyError` (stop, no further attempts); other 4xx/5xx and transport errors → retry within the same allowance, ending in `GenerationError`
     - Never log the key or put it in an exception message: re-raise httpx errors as the app's own types with `from None`
-    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 10.13, 10.16, 10.17_
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 5.6, 10.13, 10.16, 10.17_
 
   - [ ]* 6.3 Write property test for target-presence retry budget
     - **Property 10: Accepted sentence contains the target within the retry budget**
     - **Validates: Requirements 4.1, 4.6, 4.10**
-    - With a mocked provider yielding sequences of outputs, assert the first schema-valid target-containing output is accepted within ≤3 retries, else `GenerationError`
+    - With a mocked provider yielding sequences of outputs, assert the first schema-valid target-containing output is accepted within at most 1 additional attempt, else `GenerationError`
 
   - [ ]* 6.4 Write property test for difference-from-previous
-    - **Property 11: New sentence differs from the previous by a non-target word**
-    - **Validates: Requirements 4.3**
-    - Generate previous/candidate pairs; assert acceptance iff they differ in at least one non-target word
+    - **Property 11: New sentence is not identical to the previous one**
+    - **Validates: Requirements 4.3, 4.6**
+    - Generate previous/candidate text pairs (identical, identical except for leading or trailing whitespace including U+3000, differing by one character, by internal whitespace, or by one token); assert a candidate is discarded exactly when its trimmed text equals the previous trimmed text
 
   - [ ]* 6.5 Write integration test for the timeout + retry branch
-    - Use a simulated slow/failing provider; assert `GenerationTimeout` past 5s and that exhausted retries raise `GenerationError` (never calling the real API)
+    - Use a simulated slow/failing provider; assert `GenerationTimeout` past 15 s and that exhausted retries raise `GenerationError` (never calling the real API)
     - Assert `GEMINI_RESPONSE_SCHEMA` and `GeneratedSentenceSchema` declare the same field names and required sets
     - _Requirements: 4.2, 4.5, 4.6_
 
   - [ ]* 6.6 Write property test for Gemini generation error mapping
     - **Property 24: Gemini generation errors map correctly and stop or retry as required**
     - **Validates: Requirements 4.8, 4.9, 4.11**
-    - Generate sequences of mocked `generateContent` responses (via `httpx.MockTransport`) drawn from {valid sentence, discarded output, quota rejection (429 or `RESOURCE_EXHAUSTED`), invalid-key rejection (400 `API_KEY_INVALID`, 401, 403 `PERMISSION_DENIED`), transient error (other 4xx, 5xx, transport error)}; assert requests stop at the first terminal outcome, quota and invalid-key rejections raise `QuotaExceededError` / `InvalidGeminiKeyError` with no later request, budget exhaustion raises `GenerationError` after exactly 4 requests, and a valid sentence within the budget is returned
+    - Generate sequences of mocked `generateContent` responses (via `httpx.MockTransport`) drawn from {valid sentence, discarded output, quota rejection (429 or `RESOURCE_EXHAUSTED`), invalid-key rejection (400 `API_KEY_INVALID`, 401, 403 `PERMISSION_DENIED`), transient error (other 4xx, 5xx, transport error)}; assert requests stop at the first terminal outcome, quota and invalid-key rejections raise `QuotaExceededError` / `InvalidGeminiKeyError` with no later request, budget exhaustion raises `GenerationError` after exactly 2 requests, and a valid sentence within the budget is returned
 
 - [x] 7. Implement the Review Service and session orchestration
   - [x] 7.1 Implement due selection and session start
@@ -150,9 +151,9 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     - _Requirements: 6.5, 7.4, 7.5, 8.2, 8.3, 8.4, 8.6_
 
   - [ ]* 7.3 Write property test for due selection
-    - **Property 17: Due selection is exactly the non-future words**
+    - **Property 17: Review/New classification follows review history**
     - **Validates: Requirements 8.1**
-    - Generate collections with varied next-review dates and a current date; assert the selected set is exactly those `<= today`
+    - Generate collections with varied next-review dates, zero or more ReviewRecords per word, and independent `repetitions`/`interval_days`; with limits at least the collection size, assert the Review_Words are exactly the reviewed words with `next_review_date <= d` and the New_Words are exactly the words with no ReviewRecord, whatever their date
 
   - [ ]* 7.4 Write property test for one-at-a-time presentation
     - **Property 18: Session presents each due word once, one at a time**
@@ -507,6 +508,74 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
 - [x] 18. Checkpoint - Anki import complete
   - Run the full backend suite (`pytest`, including the `slow` import performance tests), the frontend tests (`npx vitest --run`), and the frontend build (`npm run build`); ensure all tests pass, ask the user if questions arise.
 
+- [x] 19. Implement per-session study limits
+  - Builds the design's Study_Day helper, the Study_Settings columns, capped review-first selection, the study-settings service and routes, and the 학습 설정 view (Requirements 1.5, 2.26, 8 revised, 11). Study settings need an App_Session and no Gemini key.
+  - [x] 19.1 Add the pure Study_Day helper and use it for every "today"
+    - In `backend/pyproject.toml` add `tzdata>=2024.1` so `ZoneInfo("Asia/Seoul")` resolves on hosts without a system time zone database
+    - Create `app/services/study_day.py` with `STUDY_DAY_ZONE = ZoneInfo("Asia/Seoul")`, `STUDY_DAY_START = time(7, 0)`, `_utc_now()`, the pure `study_day(now_utc) -> date` (a naive datetime is read as UTC; convert to KST, subtract 7 h, take the date), and `current_study_day(clock=None)` that looks up `_utc_now` at call time so tests can monkeypatch `app.services.study_day._utc_now`
+    - Replace each `date.today()`: `app/api/routes/review.py` `start_session` passes `current_study_day()`; `WordService.add_word` uses `today if today is not None else current_study_day()`; `AnkiImportService.__init__` defaults to `today: Callable[[], date] = current_study_day`; `add_words_bulk`, `_entry_values`, and `get_anki_import_service` stay unchanged
+    - Add example tests: the five `study_day` boundary examples from the design; `add_word` without `today` and `AnkiImportService` without `today` give `next_review_date == 2 June` with `_utc_now` patched to 06:30 KST on 3 June; the review route passes `current_study_day()`
+    - _Requirements: 1.5, 2.26, 8.1_
+
+  - [ ]* 19.2 Write property test for the Study_Day boundary
+    - **Property 35: Study_Day follows the 07:00 KST boundary**
+    - **Validates: Requirements 1.5, 2.26, 8.1**
+    - Generate naive and aware datetimes (UTC, Asia/Seoul, fixed offsets −12 h to +14 h) plus instants within ±2 s of 22:00:00 UTC and 15:00:00 UTC; assert `study_day(t) == (u + timedelta(hours=2)).date()` for `u` = `t` in UTC, naive equals `replace(tzinfo=UTC)`, equal instants in different zones agree, and `current_study_day(clock) == study_day(clock())`
+
+  - [x] 19.3 Add the Study_Settings columns and migration
+    - In `app/models/user.py` add `DEFAULT_NEW_WORD_LIMIT = 50`, `DEFAULT_REVIEW_WORD_LIMIT = 100`, `STUDY_LIMIT_MIN = 0`, `STUDY_LIMIT_MAX = 1000`, and the NOT NULL integer columns `new_word_limit` and `review_word_limit` with both ORM `default` and `server_default`
+    - Create `alembic/versions/c7a1e9f4b2d8_add_study_settings.py` (`revision = 'c7a1e9f4b2d8'`, `down_revision = 'd2f7e806032a'`) using `op.batch_alter_table('users')`: upgrade adds the two columns with `server_default` `50` / `100`; downgrade drops only those two columns; no CHECK constraint
+    - Update `tests/unit/test_models.py` (a new user row reads 50 / 100) and `tests/integration/test_migrations.py` (from `d2f7e806032a` with one user row, `upgrade head` gives 50 / 100 and NOT NULL columns; `downgrade d2f7e806032a` removes both columns with user and word rows intact)
+    - _Requirements: 11.1, 11.2_
+
+  - [x] 19.4 Implement capped, review-first selection in `ReviewService.start_session`
+    - Keep the key gate as the first statement (`MissingGeminiKeyError` before any query) and the `start_session(user_id, day)` call shape; read `review_word_limit` / `new_word_limit` from the `User` row, falling back to the defaults when the row is missing
+    - Classify with a correlated `EXISTS` on `ReviewRecord.word_id == WordEntry.id`: when `review_limit > 0`, Review_Words are reviewed words with `next_review_date <= day` ordered by `(next_review_date, created_at, id)` and limited to `review_limit`; when `new_limit > 0`, New_Words are words with no ReviewRecord, any `next_review_date`, ordered by `(created_at, id)` and limited to `new_limit`
+    - Concatenate Review_Words then New_Words into the session word list with `session_date = day`; an empty list returns `NoDueWords` and registers no session; `reveal`, `record_rating`, and the summary stay unchanged
+    - Update `tests/unit/test_review_service_start.py`: cases with future-dated unreviewed words now expect them in the New_Word group; add examples for a lapsed word (one ReviewRecord, `repetitions == 0`) with a future date (not selected) and with `next_review_date <= d` (selected as a Review_Word), limits 0 / 0 with a non-empty collection (`NoDueWords`), and no key with limits 0 / 0 (`MissingGeminiKeyError`)
+    - _Requirements: 8.1, 8.2, 8.5, 10.1, 11.4, 11.6, 11.7_
+
+  - [ ]* 19.5 Write property test for capped session selection
+    - **Property 36: Session selection is capped, review-first, disjoint, and deterministic**
+    - **Validates: Requirements 8.1, 8.2, 8.5, 11.4, 11.6, 11.7**
+    - Against in-memory SQLite, generate 0–25 words for the Learner plus 0–5 for a second Learner, `next_review_date` within ±10 days of `d`, `created_at` from a few distinct seconds, 0–3 ReviewRecords per word, and limits from `{0, 1, 2, 3, collection size, 1000}` stored on the User row; compare `start_session(user_id, d)` with the sort-and-slice oracle `R + N`, assert `NoDueWords` exactly when `R + N` is empty, no repeated or foreign ids, and the same id list on a second call
+
+  - [x] 19.6 Implement `StudySettingsService` and the study-settings schemas
+    - Create `app/schemas/study_settings.py` with `StudyLimit = Annotated[StrictInt, Field(ge=STUDY_LIMIT_MIN, le=STUDY_LIMIT_MAX)]`, `StudySettingsIn` (both fields required, rejecting bool, float including `5.0`, numeric strings, and null) and `StudySettingsOut` (`from_attributes=True`)
+    - Create `app/services/study_settings_service.py` with `StudySettingsService(db)`: `get(user_id)` loads the `User` and returns `StudySettingsOut`; `update(user_id, data: StudySettingsIn)` sets both columns and commits once, rolling back and re-raising on a database error
+    - _Requirements: 11.1, 11.3, 11.4, 11.5, 11.8_
+
+  - [ ]* 19.7 Write property test for study settings validation
+    - **Property 37: Study settings are accepted exactly when both values are integers from 0 to 1000**
+    - **Validates: Requirements 11.3, 11.4, 11.5**
+    - Through FastAPI's `TestClient` on in-memory SQLite with an overridden `CurrentUser` (runs after 19.8), generate PUT bodies: objects with each field drawn from integers in `-5..1005`, booleans, floats (including `float(n)`), numeric strings, `None`, or absent, plus non-object JSON and malformed bytes; assert `200` iff both fields are non-bool integers in `0..1000` and a following `GET` returns the submitted pair, otherwise `422 invalid_study_settings` with `errors` naming exactly the invalid or missing fields (both for malformed or non-object bodies) and a following `GET` returning the previous pair
+
+  - [x] 19.8 Implement the study-settings routes and wiring
+    - In `app/api/deps.py` add `get_study_settings_service(db) -> StudySettingsService` and `StudySettingsServiceDep`
+    - Create `app/api/routes/study_settings.py`: `GET` returns `service.get(user.id)`; `PUT` is `async def put_study_settings(request: Request, user: CurrentUser, service: StudySettingsServiceDep)` and parses the body by hand (malformed JSON or a non-object → errors for both fields; `StudySettingsIn.model_validate` failure → one entry per invalid field keyed by `loc[0]`, de-duplicated, ordered `new_word_limit`, `review_word_limit`), returning `422 {"detail": {"code": "invalid_study_settings", "message": "Study limits must be whole numbers from 0 to 1000.", "errors": [{field, message: "Must be a whole number from 0 to 1000."}]}}` with fixed messages, and on success `await run_in_threadpool(service.update, user.id, data)` → `200 StudySettingsOut`; both handlers use `user.id` only
+    - In `app/main.py` register `app.include_router(study_settings.router, prefix="/api/study-settings", tags=["study-settings"])`
+    - _Requirements: 11.3, 11.4, 11.5, 11.8, 11.9_
+
+  - [ ]* 19.9 Write integration tests for the study-settings routes
+    - `GET` returns 50 / 100 for a new user; Learner A saves `{1, 1}` and A's next `POST /api/review/sessions` returns at most one Review_Word and one New_Word, while Learner B on 50 / 100 gets the full selection and B's stored values are unchanged
+    - `GET` and `PUT /api/study-settings` return 401 with no data for missing, invalid, expired, and revoked sessions (added to the existing auth-protected route list), a rejected PUT leaves the stored row unchanged, and neither route needs a Gemini key
+    - _Requirements: 11.2, 11.3, 11.4, 11.8, 11.9_
+
+  - [x] 19.10 Build the frontend study-settings client and the 학습 설정 view
+    - In `frontend/src/api/types.ts` add `StudySettings` and `StudySettingsErrorCode = 'invalid_study_settings'`; in `client.ts` add `'invalid_study_settings'` to `CODED_ERRORS` (its type parameter list gains `StudySettingsErrorCode`) and to the `ApiErrorCode` union so a coded 422 is not classified as `invalid_rating`
+    - In `frontend/src/api/endpoints.ts` add `STUDY_SETTINGS_PATH`, `getStudySettings()` (`GET`) and `putStudySettings(settings)` (`PUT` with a JSON body of both fields), both on `request<T>()`; export them from `index.ts`
+    - Create `frontend/src/views/StudySettings.tsx`: a `surface-card` headed "학습 설정" with the design's description line; load with a spinner and a "설정을 불러오지 못했어요." + "다시 시도" failure state; inputs **신규 단어** and **복습 단어** (`type="number"`, `inputMode="numeric"`, `min={0}`, `max={1000}`, `step={1}`, raw string state) with the design's helper text; exported `validateStudyLimit(text)` (`^\d+$` and ≤ 1000) showing "0부터 1000 사이의 정수를 입력하세요" with `aria-invalid` / `aria-describedby` and disabling **저장**; save calls `putStudySettings` with numbers, is disabled while pending, shows the `role="status"` line "저장했어요. 다음 복습 세션부터 적용돼요." (cleared on the next edit), places server `fieldErrors` under the matching inputs, and shows "저장하지 못했어요. 잠시 후 다시 시도해 주세요." for other errors
+    - In `frontend/src/App.tsx` extend `type View` with `'settings'`, add the "학습 설정" header button directly after the Gemini key entry (same classes and active state, glyph `設`, label from `lg`, `title`/`aria-label` "학습 설정", `data-testid="header-settings-entry"`, `aria-current="page"` when active, `setView('settings')`), and render `<StudySettings />` in `main` when `view === 'settings'`
+    - _Requirements: 11.3, 11.4, 11.5_
+
+  - [ ]* 19.11 Write UI tests for the 학습 설정 view
+    - `StudySettings.test.tsx`: renders 신규 단어 / 복습 단어 with mocked 50 / 100; `validateStudyLimit` accepts "0", "1000", "50" and rejects "", "-1", "1001", "1.5", "1e2", "abc" with the message and a disabled 저장; 저장 sends numbers, is disabled while pending, and shows the success line; an `invalid_study_settings` error for `review_word_limit` shows under 복습 단어 only; a load failure shows the retry control
+    - App shell: `header-settings-entry` sits after the Gemini key entry, opens the view, and has `aria-current="page"` while shown; `endpoints.test.ts` checks the GET and PUT calls; `client.test.ts` checks `classify(422, {code: "invalid_study_settings", ...})` gives that code with `fieldErrors`
+    - _Requirements: 11.3, 11.4, 11.5_
+
+- [x] 20. Checkpoint - study limits complete
+  - Run the backend suite (`pytest`), the frontend tests (`npm test -- --run`), the type check (`npx tsc -b`), and the frontend build (`npm run build`); ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional tests and can be skipped for a faster MVP; core implementation tasks are never optional.
@@ -517,8 +586,9 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
 - Checkpoints ensure incremental validation at the backend-complete and full-stack-wired boundaries.
 - **Auth-model update (Google + Gemini BYOK):** sign-in is "Sign in with Google" (OAuth 2.0 Authorization Code + PKCE + OIDC with scopes `openid email profile`), used for identity only; Google access and refresh tokens are discarded and never persisted. Sentence generation calls the Gemini API from the backend with each Learner's own Gemini_API_Key (BYOK), connected through the in-app Key_Setup_Guide, stored Fernet-encrypted, and shown in the browser only as the last-4 Key_Hint. There is **no developer-held Gemini key and no OpenAI or ChatGPT dependency**. Tasks 1, 2.1, 2.2, 6.1, 6.2, 8.1, 8.2, 9.1, 9.3, 11.2, 11.3 and checkpoints 10 and 16 were reopened because the existing OpenAI "Sign in with ChatGPT" / plan-usage implementation no longer matches the design; 8.5, 9.5, and 11.4 are new; optional tests 6.6, 8.4 (repurposed), and 8.6–8.9 cover Properties 21–26.
 - **Anki deck import (Requirement 2) is required.** Task 17 builds it: pure helpers (17.1), the text reader (17.7), the `.apkg` reader and code-built fixtures (17.10), the upload reader and preview store (17.13), the bulk word methods and import service (17.15), the routes (17.18), the typed client (17.21), the ImportDeck panel (17.23), and the README section (17.25). Its tests (17.2–17.6, 17.8, 17.9, 17.11, 17.12, 17.14, 17.16, 17.17, 17.19, 17.20, 17.22, 17.24) are optional like all other tests. Task 18 is its checkpoint.
-- All 10 requirements and all 34 correctness properties are covered: Properties 1–4 (word service), 5 and 27–34 (Anki import: 5 → 17.16, 27 → 17.8, 28 → 17.2, 29 → 17.3, 30 → 17.4, 31 → 17.5, 32 → 17.6, 33 → 17.11, 34 → 17.17), 6–9 (frontend render/lookup/reveal/rating), 10–12 (sentence generation), 13–16 (scheduler + persistence), 17–20 (review session), 21–23 and 26 (Gemini key service, tasks 8.6–8.9), 24 (Gemini error mapping, task 6.6), 25 (Google ID-token validation, task 8.4). Requirement 9 is covered by tasks 8.1, 8.2, 8.4, 9.1, and 11.3; Requirement 10 by tasks 8.5–8.9, 9.3 (10.1), 9.5, and 11.4.
-- Task 1 has no sub-tasks, so it is not listed in the dependency graph; complete it before wave 0. Checkpoints 10, 16, and 18 are not listed either; task 18 runs after wave 16.
+- **Per-session study limits (Requirement 11, revised Requirement 8) are required.** Task 19 builds them: the Study_Day helper and its call sites (19.1), the `User` columns and migration `c7a1e9f4b2d8` (19.3), capped review-first selection (19.4), `StudySettingsService` and schemas (19.6), the `/api/study-settings` routes (19.8), and the frontend client, 학습 설정 view, and header button (19.10). Its tests (19.2, 19.5, 19.7, 19.9, 19.11) are optional like all other tests. Task 20 is its checkpoint.
+- All 11 requirements and all 37 correctness properties are covered: Properties 1–4 (word service), 35–37 (study limits: 35 → 19.2, 36 → 19.5, 37 → 19.7), 5 and 27–34 (Anki import: 5 → 17.16, 27 → 17.8, 28 → 17.2, 29 → 17.3, 30 → 17.4, 31 → 17.5, 32 → 17.6, 33 → 17.11, 34 → 17.17), 6–9 (frontend render/lookup/reveal/rating), 10–12 (sentence generation), 13–16 (scheduler + persistence), 17–20 (review session), 21–23 and 26 (Gemini key service, tasks 8.6–8.9), 24 (Gemini error mapping, task 6.6), 25 (Google ID-token validation, task 8.4). Requirement 9 is covered by tasks 8.1, 8.2, 8.4, 9.1, and 11.3; Requirement 10 by tasks 8.5–8.9, 9.3 (10.1), 9.5, and 11.4; Requirement 11 by tasks 19.3, 19.4, 19.6, 19.8, and 19.10.
+- Task 1 has no sub-tasks, so it is not listed in the dependency graph; complete it before wave 0. Completed checkpoints 10, 16, and 18 are not listed either; task 18 runs after wave 16. The open checkpoint 20 has its own wave (22), after all task 19 waves.
 
 ## Task Dependency Graph
 
@@ -541,7 +611,13 @@ Example and integration tests cover the failure branches (timeout/retry, schedul
     { "id": 13, "tasks": ["17.8", "17.9", "17.10", "17.14", "17.22", "17.23"] },
     { "id": 14, "tasks": ["17.11", "17.12", "17.15", "17.24", "17.25"] },
     { "id": 15, "tasks": ["17.16", "17.17", "17.18"] },
-    { "id": 16, "tasks": ["17.19", "17.20"] }
+    { "id": 16, "tasks": ["17.19", "17.20"] },
+    { "id": 17, "tasks": ["19.1", "19.3"] },
+    { "id": 18, "tasks": ["19.2", "19.4", "19.6"] },
+    { "id": 19, "tasks": ["19.5", "19.8"] },
+    { "id": 20, "tasks": ["19.7", "19.9", "19.10"] },
+    { "id": 21, "tasks": ["19.11"] },
+    { "id": 22, "tasks": ["20"] }
   ]
 }
 ```

@@ -16,7 +16,7 @@ generation error mapping (Req 4.5, 4.7-4.11).
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -32,6 +32,7 @@ from app.db.session import Base, get_db
 from app.main import create_app
 from app.models.gemini_credential import GeminiCredential
 from app.models.generated_sentence import GeneratedSentence as GeneratedSentenceORM
+from app.models.review_record import ReviewRecord
 from app.models.user import User
 from app.models.word_entry import WordEntry
 from app.schemas.sentence import GeneratedSentence
@@ -44,6 +45,7 @@ from app.services.sentence_generation.base import (
     QuotaExceededError,
     SentenceGenerationService,
 )
+from app.services.study_day import current_study_day
 
 GEMINI_KEY = "AIza" + "Q" * 31 + "wxyz"
 
@@ -193,7 +195,7 @@ def _add_word(
 def test_start_session_without_key_returns_gemini_key_required(
     db_session, keyless_user
 ):
-    _add_word(db_session, keyless_user.id, "食べる", date.today())
+    _add_word(db_session, keyless_user.id, "食べる", current_study_day())
     client = _make_client(db_session, keyless_user, _StubSentenceService())
 
     resp = client.post("/api/review/sessions")
@@ -228,7 +230,7 @@ def test_word_routes_work_without_a_key(db_session, keyless_user):
 
 
 def test_start_session_returns_due_words(db_session, test_user):
-    _add_word(db_session, test_user.id, "食べる", date.today())
+    _add_word(db_session, test_user.id, "食べる", current_study_day())
     client = _make_client(db_session, test_user, _StubSentenceService())
 
     resp = client.post("/api/review/sessions")
@@ -239,9 +241,13 @@ def test_start_session_returns_due_words(db_session, test_user):
 
 
 def test_start_session_no_due_words(db_session, test_user):
-    _add_word(
-        db_session, test_user.id, "未来", date.today() + timedelta(days=5)
+    # A reviewed word dated after the Study_Day is not due; an unreviewed word
+    # would be a New_Word and selected regardless of its date (Req 8.1).
+    future = _add_word(
+        db_session, test_user.id, "未来", current_study_day() + timedelta(days=5)
     )
+    db_session.add(ReviewRecord(word_id=future.id, rating=3, interval_days=5))
+    db_session.commit()
     client = _make_client(db_session, test_user, _StubSentenceService())
 
     resp = client.post("/api/review/sessions")
@@ -249,9 +255,27 @@ def test_start_session_no_due_words(db_session, test_user):
     assert resp.json()["status"] == "no_due_words"
 
 
+def test_start_session_uses_the_current_study_day(
+    db_session, test_user, monkeypatch
+):
+    # 06:30 KST on 3 June is still the 2 June Study_Day (Req 8.1).
+    monkeypatch.setattr(
+        "app.services.study_day._utc_now",
+        lambda: datetime(2025, 6, 2, 21, 30, tzinfo=UTC),
+    )
+    _add_word(db_session, test_user.id, "食べる", date(2025, 6, 2))
+    client = _make_client(db_session, test_user, _StubSentenceService())
+
+    resp = client.post("/api/review/sessions")
+
+    assert resp.status_code == 200, resp.text
+    state = ReviewService._sessions[resp.json()["session_id"]]
+    assert state.session_date == date(2025, 6, 2)
+
+
 def test_full_flow_reveal_rate_advance_summary(db_session, test_user):
-    _add_word(db_session, test_user.id, "一", date.today())
-    _add_word(db_session, test_user.id, "二", date.today())
+    _add_word(db_session, test_user.id, "一", current_study_day())
+    _add_word(db_session, test_user.id, "二", current_study_day())
     sentence_service = _StubSentenceService()
     client = _make_client(db_session, test_user, sentence_service)
 
@@ -293,7 +317,7 @@ def test_full_flow_reveal_rate_advance_summary(db_session, test_user):
 
 
 def test_rating_before_reveal_is_rejected(db_session, test_user):
-    w1 = _add_word(db_session, test_user.id, "一", date.today())
+    w1 = _add_word(db_session, test_user.id, "一", current_study_day())
     client = _make_client(db_session, test_user, _StubSentenceService())
     session_id = client.post("/api/review/sessions").json()["session_id"]
 
@@ -305,7 +329,7 @@ def test_rating_before_reveal_is_rejected(db_session, test_user):
 
 
 def test_invalid_rating_rejected_at_schema_boundary(db_session, test_user):
-    w1 = _add_word(db_session, test_user.id, "一", date.today())
+    w1 = _add_word(db_session, test_user.id, "一", current_study_day())
     client = _make_client(db_session, test_user, _StubSentenceService())
     session_id = client.post("/api/review/sessions").json()["session_id"]
     client.post(f"/api/review/sessions/{session_id}/words/{w1.id}/reveal")
@@ -340,7 +364,7 @@ def test_unknown_session_returns_404(db_session, test_user):
 def test_generation_failures_return_typed_key_free_errors_and_retain_target(
     db_session, test_user, exc_type, expected_status, expected_code
 ):
-    word = _add_word(db_session, test_user.id, "一", date.today())
+    word = _add_word(db_session, test_user.id, "一", current_study_day())
     client = _make_client(db_session, test_user, _RaisingSentenceService(exc_type))
     session_id = client.post("/api/review/sessions").json()["session_id"]
 

@@ -217,6 +217,17 @@ export type KeyStorageErrorCode =
   | 'key_storage_unavailable' // 503: TOKEN_ENCRYPTION_KEY missing/invalid
   | 'key_storage_failed' // 500: the key change could not be saved
 
+// --- Study settings (Req 11) -------------------------------------------------
+
+/** `GET` / `PUT /api/study-settings`: per-session limits, integers 0–1000. */
+export interface StudySettings {
+  new_word_limit: number
+  review_word_limit: number
+}
+
+/** 422 from `PUT /api/study-settings`; per-field errors arrive in `fieldErrors` (11.5). */
+export type StudySettingsErrorCode = 'invalid_study_settings'
+
 // --- Sentence generation (Req 4) ---------------------------------------------
 
 /** Sentence-generation (and session-start key check) failure codes. */
@@ -265,6 +276,7 @@ export type ApiErrorCode =
   | KeyStorageErrorCode
   | AuthErrorCode
   | ImportErrorCode
+  | StudySettingsErrorCode
   | 'logout_failed' // 503: logout revocation could not be saved
   | 'not_revealed' // rating before reveal (Req 6.5)
   | 'invalid_rating' // out-of-set rating (Req 8.6)

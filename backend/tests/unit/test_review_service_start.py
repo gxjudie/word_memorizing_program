@@ -1,4 +1,4 @@
-"""Unit tests for ReviewService.start_session due selection (Req 8.1, 8.2, 8.5)."""
+"""Unit tests for ReviewService.start_session selection (Req 8.1, 8.2, 8.5, 11)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401 — register all models on Base.metadata
 from app.db.session import Base
+from app.models.review_record import ReviewRecord
 from app.models.user import User
 from app.models.word_entry import WordEntry
 from app.schemas.review import NoDueWords, ReviewSessionOut
@@ -30,12 +31,22 @@ def db() -> Session:
         session.close()
 
 
-def _make_user(db: Session, email: str = "learner@example.com") -> User:
+def _make_user(
+    db: Session,
+    email: str = "learner@example.com",
+    *,
+    new_word_limit: int | None = None,
+    review_word_limit: int | None = None,
+) -> User:
     user = User(
         email=email,
         oidc_issuer="https://accounts.google.com",
         oidc_subject=email,
     )
+    if new_word_limit is not None:
+        user.new_word_limit = new_word_limit
+    if review_word_limit is not None:
+        user.review_word_limit = review_word_limit
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -64,21 +75,141 @@ def _add_word(
     return entry
 
 
-def test_start_session_selects_only_non_future_words(db: Session):
-    """Due = next_review_date <= today; future-dated words are excluded (Req 8.1)."""
+def _add_review(db: Session, word: WordEntry, *, repetitions: int = 1) -> None:
+    """Give ``word`` one ReviewRecord so it is a Review_Word, not a New_Word."""
+    db.add(ReviewRecord(word_id=word.id, rating=3, interval_days=1))
+    word.repetitions = repetitions
+    word.interval_days = 1
+    db.commit()
+    db.refresh(word)
+
+
+def test_start_session_includes_future_dated_new_words(db: Session):
+    """Unreviewed words are New_Words and are selected whatever their date (Req 8.1)."""
     user = _make_user(db)
     today = date(2024, 1, 15)
-
-    past = _add_word(db, user.id, "過去", today - timedelta(days=3))
-    due_today = _add_word(db, user.id, "今日", today)
-    future = _add_word(db, user.id, "未来", today + timedelta(days=1))
+    past = _add_word(
+        db, user.id, "過去", today - timedelta(days=3),
+        created_at=datetime(2024, 1, 1, 9, 0, 0),
+    )
+    due_today = _add_word(
+        db, user.id, "今日", today, created_at=datetime(2024, 1, 2, 9, 0, 0)
+    )
+    future = _add_word(
+        db, user.id, "未来", today + timedelta(days=1),
+        created_at=datetime(2024, 1, 3, 9, 0, 0),
+    )
 
     result = ReviewService(db).start_session(user.id, today)
 
     assert isinstance(result, ReviewSessionOut)
-    due_ids = {w.id for w in result.due_words}
-    assert due_ids == {past.id, due_today.id}
-    assert future.id not in due_ids
+    assert [w.id for w in result.due_words] == [past.id, due_today.id, future.id]
+
+
+def test_start_session_review_words_first_then_new_words(db: Session):
+    """Due Review_Words by (date, creation) come before New_Words (Req 8.1, 8.2)."""
+    user = _make_user(db)
+    today = date(2024, 1, 15)
+    new_old = _add_word(
+        db, user.id, "新一", today + timedelta(days=4),
+        created_at=datetime(2024, 1, 1, 9, 0, 0),
+    )
+    rev_late = _add_word(
+        db, user.id, "復一", today, created_at=datetime(2024, 1, 2, 9, 0, 0)
+    )
+    rev_early = _add_word(
+        db, user.id, "復二", today - timedelta(days=2),
+        created_at=datetime(2024, 1, 3, 9, 0, 0),
+    )
+    rev_future = _add_word(
+        db, user.id, "復三", today + timedelta(days=1),
+        created_at=datetime(2024, 1, 4, 9, 0, 0),
+    )
+    new_young = _add_word(
+        db, user.id, "新二", today, created_at=datetime(2024, 1, 5, 9, 0, 0)
+    )
+    for word in (rev_late, rev_early, rev_future):
+        _add_review(db, word)
+
+    result = ReviewService(db).start_session(user.id, today)
+
+    assert isinstance(result, ReviewSessionOut)
+    assert [w.id for w in result.due_words] == [
+        rev_early.id, rev_late.id, new_old.id, new_young.id,
+    ]
+
+
+def test_start_session_applies_both_limits(db: Session):
+    """At most review_word_limit Review_Words and new_word_limit New_Words (Req 8.1)."""
+    user = _make_user(db, new_word_limit=1, review_word_limit=2)
+    today = date(2024, 1, 15)
+    reviews = [
+        _add_word(
+            db, user.id, f"復{i}", today - timedelta(days=3 - i),
+            created_at=datetime(2024, 1, 1, 9, 0, i),
+        )
+        for i in range(3)
+    ]
+    for word in reviews:
+        _add_review(db, word)
+    news = [
+        _add_word(
+            db, user.id, f"新{i}", today, created_at=datetime(2024, 1, 2, 9, 0, i)
+        )
+        for i in range(2)
+    ]
+
+    result = ReviewService(db).start_session(user.id, today)
+
+    assert isinstance(result, ReviewSessionOut)
+    assert [w.id for w in result.due_words] == [
+        reviews[0].id, reviews[1].id, news[0].id,
+    ]
+
+
+def test_start_session_lapsed_word_with_future_date_not_selected(db: Session):
+    """A lapsed word (one ReviewRecord, repetitions 0) dated after d is not selected."""
+    user = _make_user(db)
+    today = date(2024, 1, 15)
+    lapsed = _add_word(db, user.id, "忘れ", today + timedelta(days=1))
+    _add_review(db, lapsed, repetitions=0)
+
+    result = ReviewService(db).start_session(user.id, today)
+
+    assert isinstance(result, NoDueWords)
+
+
+def test_start_session_lapsed_word_due_selected_as_review_word(db: Session):
+    """A lapsed word with next_review_date <= d is a Review_Word (Req 8.1)."""
+    user = _make_user(db)
+    today = date(2024, 1, 15)
+    new_word = _add_word(
+        db, user.id, "新", today, created_at=datetime(2024, 1, 1, 9, 0, 0)
+    )
+    lapsed = _add_word(
+        db, user.id, "忘れ", today, created_at=datetime(2024, 1, 2, 9, 0, 0)
+    )
+    _add_review(db, lapsed, repetitions=0)
+
+    result = ReviewService(db).start_session(user.id, today)
+
+    assert isinstance(result, ReviewSessionOut)
+    assert [w.id for w in result.due_words] == [lapsed.id, new_word.id]
+
+
+def test_start_session_zero_limits_returns_marker(db: Session):
+    """Limits 0 / 0 select nothing from a non-empty collection (Req 8.5, 11.6, 11.7)."""
+    user = _make_user(db, new_word_limit=0, review_word_limit=0)
+    today = date(2024, 1, 15)
+    _add_word(db, user.id, "新", today)
+    reviewed = _add_word(db, user.id, "復", today)
+    _add_review(db, reviewed)
+    before = dict(ReviewService._sessions)
+
+    result = ReviewService(db).start_session(user.id, today)
+
+    assert isinstance(result, NoDueWords)
+    assert ReviewService._sessions == before
 
 
 def test_start_session_due_words_ordered_by_creation(db: Session):
@@ -103,10 +234,11 @@ def test_start_session_due_words_ordered_by_creation(db: Session):
 
 
 def test_start_session_no_due_words_returns_marker(db: Session):
-    """An empty due set returns NoDueWords and starts no session (Req 8.5)."""
+    """No due Review_Word and no New_Word returns NoDueWords (Req 8.5)."""
     user = _make_user(db)
     today = date(2024, 1, 15)
-    _add_word(db, user.id, "未来", today + timedelta(days=5))
+    future = _add_word(db, user.id, "未来", today + timedelta(days=5))
+    _add_review(db, future)
 
     result = ReviewService(db).start_session(user.id, today)
 
@@ -181,6 +313,17 @@ def test_start_session_without_gemini_key_raises_before_due_selection(db: Sessio
 
     assert checked == [user.id]
     assert ReviewService._sessions == before
+
+
+def test_start_session_without_gemini_key_and_zero_limits_raises(db: Session):
+    """The key gate runs before selection even when limits are 0 / 0 (Req 10.1)."""
+    from app.services.sentence_generation.base import MissingGeminiKeyError
+
+    user = _make_user(db, new_word_limit=0, review_word_limit=0)
+    service = ReviewService(db, has_gemini_key=lambda _uid: False)
+
+    with pytest.raises(MissingGeminiKeyError):
+        service.start_session(user.id, date(2024, 1, 15))
 
 
 def test_start_session_with_gemini_key_selects_due_words(db: Session):

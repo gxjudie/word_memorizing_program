@@ -16,6 +16,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 INITIAL_REVISION = "fc993ac91694"
 GOOGLE_GEMINI_REVISION = "d2f7e806032a"
+STUDY_SETTINGS_COLUMNS = {"new_word_limit", "review_word_limit"}
 
 HEAD_TABLES = {
     "users",
@@ -93,6 +94,8 @@ def test_head_migration_matches_models_and_downgrades_cleanly(
             "oidc_issuer",
             "oidc_subject",
             "created_at",
+            "new_word_limit",
+            "review_word_limit",
         }
         assert ("uq_user_oidc_subject", ("oidc_issuer", "oidc_subject")) in (
             _unique_constraints(inspector, "users")
@@ -217,3 +220,80 @@ def test_upgrade_from_initial_keeps_existing_users_and_words(
 
     assert tuple(user) == ("u1", "a@example.com", "https://auth.openai.com", "sub-1")
     assert tuple(word) == ("w1", "u1", "猫")
+
+
+def test_study_settings_migration_defaults_existing_users_and_downgrades(
+    migration_db: tuple[Config, str],
+) -> None:
+    """c7a1e9f4b2d8 gives existing users 50 / 100 and downgrades losslessly (Req 11.1, 11.2)."""
+    config, database_url = migration_db
+    command.upgrade(config, GOOGLE_GEMINI_REVISION)
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO users (id, email, name, oidc_issuer, "
+                    "oidc_subject) VALUES ('u1', 'a@example.com', 'A', "
+                    "'https://accounts.google.com', 'sub-1')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO word_entries (id, user_id, word_form, reading, "
+                    "meaning, next_review_date, ease_factor, interval_days, "
+                    "repetitions) VALUES ('w1', 'u1', '猫', 'ねこ', 'cat', "
+                    "'2026-01-01', 2.5, 0, 0)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    def check_upgraded(inspector: Inspector) -> None:
+        columns = {c["name"]: c for c in inspector.get_columns("users")}
+        assert STUDY_SETTINGS_COLUMNS.issubset(columns)
+        for name in STUDY_SETTINGS_COLUMNS:
+            assert not columns[name]["nullable"]
+
+    _inspect(database_url, check_upgraded)
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            limits = conn.execute(
+                text("SELECT id, new_word_limit, review_word_limit FROM users")
+            ).one()
+    finally:
+        engine.dispose()
+    assert tuple(limits) == ("u1", 50, 100)
+
+    command.downgrade(config, GOOGLE_GEMINI_REVISION)
+
+    def check_downgraded(inspector: Inspector) -> None:
+        columns = {c["name"] for c in inspector.get_columns("users")}
+        assert STUDY_SETTINGS_COLUMNS.isdisjoint(columns)
+
+    _inspect(database_url, check_downgraded)
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            user = conn.execute(
+                text("SELECT id, email, oidc_issuer, oidc_subject FROM users")
+            ).one()
+            word = conn.execute(
+                text("SELECT id, user_id, word_form, reading FROM word_entries")
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert tuple(user) == (
+        "u1",
+        "a@example.com",
+        "https://accounts.google.com",
+        "sub-1",
+    )
+    assert tuple(word) == ("w1", "u1", "猫", "ねこ")

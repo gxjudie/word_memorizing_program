@@ -85,13 +85,23 @@ def create_app() -> FastAPI:
 
     # Router registration. The review router is included here as the API layer
     # is built out in later tasks.
-    from app.api.routes import auth, gemini_key, review, word_import, words
+    from app.api.routes import (
+        auth,
+        gemini_key,
+        review,
+        study_settings,
+        word_import,
+        words,
+    )
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(word_import.router, prefix="/api/words/import", tags=["word-import"])
     app.include_router(words.router, prefix="/api/words", tags=["words"])
     app.include_router(review.router, prefix="/api/review", tags=["review"])
     app.include_router(gemini_key.router, prefix="/api/gemini-key", tags=["gemini-key"])
+    app.include_router(
+        study_settings.router, prefix="/api/study-settings", tags=["study-settings"]
+    )
 
     return app
 

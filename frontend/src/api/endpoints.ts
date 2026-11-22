@@ -14,6 +14,7 @@ import type {
   NoDueWords,
   RatingResult,
   ReviewSessionOut,
+  StudySettings,
   WordEntryOut,
   WordInput,
 } from './types'
@@ -99,6 +100,29 @@ export function putGeminiKey(apiKey: string): Promise<GeminiKeyConnectResult> {
 
 export function deleteGeminiKey(): Promise<GeminiKeyStatus> {
   return request<GeminiKeyStatus>(GEMINI_KEY_PATH, { method: 'DELETE' })
+}
+
+// --- Study settings (Req 11) ---------------------------------------------------
+
+export const STUDY_SETTINGS_PATH = '/api/study-settings'
+
+/** The signed-in Learner's limits (50 / 100 until saved) (Req 11.2, 11.3). */
+export function getStudySettings(): Promise<StudySettings> {
+  return request<StudySettings>(STUDY_SETTINGS_PATH)
+}
+
+/**
+ * Store both limits (Req 11.4). Invalid values reject with an ApiError whose
+ * code is `invalid_study_settings` and whose `fieldErrors` name each field.
+ */
+export function putStudySettings(settings: StudySettings): Promise<StudySettings> {
+  return request<StudySettings>(STUDY_SETTINGS_PATH, {
+    method: 'PUT',
+    body: {
+      new_word_limit: settings.new_word_limit,
+      review_word_limit: settings.review_word_limit,
+    },
+  })
 }
 
 // --- Words ------------------------------------------------------------------

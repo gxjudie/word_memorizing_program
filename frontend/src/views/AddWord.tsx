@@ -1,22 +1,10 @@
 import { useId, useState } from 'react'
 import { addWord } from '../api/endpoints'
 import { ApiError, type WordEntryOut } from '../api/types'
+import { WORD_FIELDS, type WordFieldName, type WordValues } from '../wordFields'
 import ImportDeck from './ImportDeck'
 
-type FieldName = 'word_form' | 'reading' | 'meaning'
-
-const FIELDS: {
-  name: FieldName
-  label: string
-  englishLabel: string
-  max: number
-  placeholder: string
-  helper: string
-}[] = [
-  { name: 'word_form', label: '일본어 단어', englishLabel: 'Word', max: 50, placeholder: '例）懐かしい', helper: '한자, 히라가나 또는 가타카나' },
-  { name: 'reading', label: '읽기', englishLabel: 'Reading', max: 100, placeholder: 'なつかしい', helper: '히라가나로 적어 주세요' },
-  { name: 'meaning', label: '뜻', englishLabel: 'Meaning', max: 500, placeholder: '그리운, 그립다', helper: '문맥에서 떠올릴 핵심 뜻' },
-]
+const FIELDS = WORD_FIELDS
 
 type EntryTab = 'manual' | 'import'
 
@@ -46,19 +34,21 @@ export interface AddWordProps {
   onAdded?: (word: WordEntryOut) => void
   /** "복습하러 가기" on the import summary. */
   onGoToReview?: () => void
+  /** "단어장 보기" after a manual save, so the new word can be checked. */
+  onViewWords?: () => void
 }
 
 /** Manual word entry with backend field validation and exact deduplication. */
-export function AddWord({ onAdded, onGoToReview }: AddWordProps) {
+export function AddWord({ onAdded, onGoToReview, onViewWords }: AddWordProps) {
   const [tab, setTab] = useState<EntryTab>('manual')
   const tabsId = useId()
-  const [values, setValues] = useState<Record<FieldName, string>>({ word_form: '', reading: '', meaning: '' })
-  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldName, string>>>({})
+  const [values, setValues] = useState<WordValues>({ word_form: '', reading: '', meaning: '' })
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<WordFieldName, string>>>({})
   const [formError, setFormError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  function update(name: FieldName, value: string) {
+  function update(name: WordFieldName, value: string) {
     setValues((current) => ({ ...current, [name]: value }))
     if (fieldErrors[name]) {
       setFieldErrors((current) => ({ ...current, [name]: undefined }))
@@ -78,9 +68,9 @@ export function AddWord({ onAdded, onGoToReview }: AddWordProps) {
       onAdded?.(word)
     } catch (err) {
       if (err instanceof ApiError && err.kind === 'validation') {
-        const next: Partial<Record<FieldName, string>> = {}
+        const next: Partial<Record<WordFieldName, string>> = {}
         for (const fieldError of err.fieldErrors) {
-          next[fieldError.field as FieldName] = fieldError.message
+          next[fieldError.field as WordFieldName] = fieldError.message
         }
         setFieldErrors(next)
       } else if (err instanceof ApiError && err.kind === 'duplicate') {
@@ -168,7 +158,7 @@ export function AddWord({ onAdded, onGoToReview }: AddWordProps) {
                 'aria-label': englishLabel,
                 'aria-invalid': hasError || undefined,
                 'aria-describedby': hasError ? `${name}-error` : `${name}-helper`,
-                className: `focus-ring mt-2 w-full rounded-2xl border bg-white px-4 py-3 text-base text-ink shadow-sm transition placeholder:text-ink-faint/65 ${hasError ? 'border-danger bg-danger-soft/30' : 'border-line hover:border-ink-faint'}`,
+                className: `focus-ring mt-2 w-full rounded-2xl border bg-white px-4 py-3 text-base text-ink shadow-sm transition placeholder:text-ink-faint ${hasError ? 'border-danger bg-danger-soft/30' : 'border-line hover:border-ink-faint'}`,
               }
               return (
                 <div key={name}>
@@ -195,16 +185,27 @@ export function AddWord({ onAdded, onGoToReview }: AddWordProps) {
             </p>
           )}
           {success && (
-            <p role="status" data-testid="form-success" className="mt-6 rounded-2xl border border-forest/15 bg-forest-soft px-4 py-3 text-sm font-medium text-forest">
-              ✓ {success}
-            </p>
+            <>
+              <p role="status" data-testid="form-success" className="mt-6 rounded-2xl border border-forest/15 bg-forest-soft px-4 py-3 text-sm font-medium text-forest">
+                ✓ {success}
+              </p>
+              {onViewWords && (
+                <button
+                  type="button"
+                  onClick={onViewWords}
+                  className="mt-3 rounded-xl px-3 py-2 text-sm font-semibold text-forest underline-offset-4 transition hover:underline focus:outline-none focus:ring-4 focus:ring-forest/15"
+                >
+                  단어장에서 확인하기 →
+                </button>
+              )}
+            </>
           )}
 
           <button
             type="submit"
             disabled={submitting}
             aria-label="Add word"
-            className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3.5 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:cursor-wait disabled:translate-y-0 disabled:opacity-60"
+            className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3.5 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:cursor-wait disabled:translate-y-0 disabled:opacity-60"
           >
             <span aria-hidden="true">＋</span>
             {submitting ? '추가하는 중…' : '단어장에 추가'}

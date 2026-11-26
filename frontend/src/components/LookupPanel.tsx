@@ -41,7 +41,7 @@ export function LookupPanel({ token, onDismiss }: LookupPanelProps) {
           </div>
           <div className="mt-3 border-t border-forest/10 pt-3 sm:mt-0 sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0">
             {token.contains_kanji && (
-              <div className="mb-1 text-xs font-medium text-ink-faint" data-testid="lookup-furigana">
+              <div className="mb-1 text-xs font-medium text-ink-muted" data-testid="lookup-furigana">
                 후리가나 · {token.reading}
               </div>
             )}

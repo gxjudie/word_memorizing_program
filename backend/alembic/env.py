@@ -12,9 +12,8 @@ Wired to the application's SQLAlchemy metadata and configuration:
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 # Register every ORM model on Base.metadata and expose the app config.
 import app.models  # noqa: F401  (import for side-effect registration)

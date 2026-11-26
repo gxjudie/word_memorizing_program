@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Dialog from '../components/Dialog'
 import LookupPanel from '../components/LookupPanel'
 import RatingControls from '../components/RatingControls'
 import SentenceRenderer from '../components/SentenceRenderer'
@@ -10,11 +11,12 @@ import {
   isNoDueWords,
   type ApiErrorKind,
   type GeminiKeyStatus,
+  type DueWord,
   type GeneratedSentence,
   type RatingResult,
+  type RevealedWord,
   type SentenceToken,
   type SessionSummary,
-  type WordEntryOut,
 } from '../api/types'
 
 type Phase = 'loading' | 'no-due' | 'reviewing' | 'complete' | 'error' | 'key-required'
@@ -28,7 +30,23 @@ const SUMMARY_LABELS: Record<string, string> = {
   '4': '매우 쉬움',
 }
 
+/** Digit shortcuts for the four ratings, in presentation order (1..4). */
+const RATING_KEYS: Record<string, Difficulty> = {
+  '1': 1,
+  '2': 2,
+  '3': 3,
+  '4': 4,
+}
+
 const NOT_CONNECTED: GeminiKeyStatus = { connected: false, key_hint: null }
+
+const SESSION_EXPIRED_MESSAGE =
+  '복습 세션이 만료되었어요. 오래 열어 둔 화면이라 처음부터 다시 시작합니다.'
+
+function isSessionExpired(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'session_expired'
+}
+
 
 /** Friendly Korean copy per sentence-generation failure (Req 4.5, 4.7–4.11). */
 function generationIssue(error: unknown): GenerationIssue {
@@ -72,14 +90,21 @@ export interface ReviewSessionProps {
   onKeyStatusChange?: (status: GeminiKeyStatus) => void
   /** "나중에" from the key guide: go add words instead (Req 10.2). */
   onLater?: () => void
+  /** "단어장 보기" from the no-due screen. */
+  onOpenWords?: () => void
 }
 
 /** Orchestrate one-at-a-time due-word review without exposing provider tokens. */
-export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps = {}) {
+export function ReviewSession({
+  onKeyStatusChange,
+  onLater,
+  onOpenWords,
+}: ReviewSessionProps = {}) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [keyDialog, setKeyDialog] = useState<KeyDialog>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [currentWord, setCurrentWord] = useState<WordEntryOut | null>(null)
+  const [currentWord, setCurrentWord] = useState<DueWord | null>(null)
+  const [answer, setAnswer] = useState<RevealedWord | null>(null)
   const [sentence, setSentence] = useState<GeneratedSentence | null>(null)
   const [sentenceLoading, setSentenceLoading] = useState(false)
   const [generationError, setGenerationError] = useState<GenerationIssue | null>(null)
@@ -98,13 +123,18 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
     keyStatusListener.current?.(status)
   }, [])
 
-  const loadSentence = useCallback(async (sid: string, word: WordEntryOut) => {
+  const loadSentence = useCallback(async (sid: string, word: DueWord) => {
     setSentenceLoading(true)
     setGenerationError(null)
     setSentence(null)
     try {
       setSentence(await generateSentence(sid, word.id))
     } catch (error) {
+      if (isSessionExpired(error)) {
+        setPhase('error')
+        setFatalError(SESSION_EXPIRED_MESSAGE)
+        return
+      }
       const issue = generationIssue(error)
       if (issue.kind === 'gemini_key_required') notifyKeyStatus(NOT_CONNECTED)
       setGenerationError(issue)
@@ -113,8 +143,9 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
     }
   }, [notifyKeyStatus])
 
-  const presentWord = useCallback((sid: string, word: WordEntryOut) => {
+  const presentWord = useCallback((sid: string, word: DueWord) => {
     setCurrentWord(word)
+    setAnswer(null)
     setRevealed(false)
     setSelectedRating(null)
     setSelectedToken(null)
@@ -161,9 +192,14 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
   async function handleReveal() {
     if (!sessionId || !currentWord) return
     try {
-      await revealWord(sessionId, currentWord.id)
+      setAnswer(await revealWord(sessionId, currentWord.id))
       setRevealed(true)
     } catch (error) {
+      if (isSessionExpired(error)) {
+        setPhase('error')
+        setFatalError(SESSION_EXPIRED_MESSAGE)
+        return
+      }
       setRatingError(error instanceof ApiError ? error.message : '정답을 불러오지 못했어요.')
     }
   }
@@ -175,6 +211,11 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
     } else if (result.next_word && sessionId) {
       setProgress((value) => ({ ...value, current: value.current + 1 }))
       presentWord(sessionId, result.next_word)
+    } else {
+      // Defensive: a non-final rating without a next word would otherwise leave
+      // the same card on screen with no way forward.
+      setSelectedRating(null)
+      setRatingError('다음 단어를 불러오지 못했어요. 화면을 새로 고쳐 주세요.')
     }
   }
 
@@ -186,7 +227,10 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
       applyResult(await rateWord(sessionId, currentWord.id, rating))
     } catch (error) {
       setSelectedRating(null)
-      if (error instanceof ApiError && error.kind === 'scheduling_not_saved') {
+      if (isSessionExpired(error)) {
+        setPhase('error')
+        setFatalError(SESSION_EXPIRED_MESSAGE)
+      } else if (error instanceof ApiError && error.kind === 'scheduling_not_saved') {
         setRatingError('평가를 저장하지 못했어요. 다시 선택해 주세요.')
       } else if (error instanceof ApiError && error.kind === 'invalid_rating') {
         setRatingError('선택한 평가가 올바르지 않아요.')
@@ -197,6 +241,58 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
       }
     }
   }
+
+  const ratingPending = selectedRating !== null
+
+  // Keyboard-first review, Anki style: Space/Enter reveals, 1-4 rates. The
+  // handlers are skipped while typing in a field, while a dialog is open, and
+  // on the buttons themselves (Space/Enter already activate those natively).
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (phase !== 'reviewing' || keyDialog !== null) return
+      const target = event.target instanceof HTMLElement ? event.target : null
+      const tag = target?.tagName.toLowerCase() ?? ''
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        target?.isContentEditable
+      ) {
+        return
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      if (event.key === 'Escape') {
+        if (selectedToken) {
+          event.preventDefault()
+          setSelectedToken(null)
+        }
+        return
+      }
+
+      if (
+        !revealed &&
+        !sentenceLoading &&
+        !generationError &&
+        (event.key === ' ' || event.key === 'Enter') &&
+        tag !== 'button' &&
+        tag !== 'a'
+      ) {
+        event.preventDefault()
+        void handleReveal()
+        return
+      }
+
+      const rating = RATING_KEYS[event.key]
+      if (rating !== undefined && revealed && !ratingPending) {
+        event.preventDefault()
+        void handleRate(rating)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  })
 
   if (phase === 'loading') {
     return (
@@ -254,6 +350,26 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
           <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-forest-soft font-serif-jp text-4xl text-forest" aria-hidden="true">休</div>
           <h2 className="mt-6 text-2xl font-bold">오늘 복습은 모두 끝났어요</h2>
           <p className="mt-3 leading-7 text-ink-muted">지금 복습할 단어가 없습니다.<br />새 단어를 추가하거나 다음 복습일에 다시 만나요.</p>
+          <div className="mt-7 flex flex-wrap justify-center gap-2">
+            {onOpenWords && (
+              <button
+                type="button"
+                onClick={onOpenWords}
+                className="rounded-2xl border border-line bg-white px-5 py-3 text-sm font-semibold text-ink-muted transition hover:text-ink focus:outline-none focus:ring-4 focus:ring-forest/15"
+              >
+                단어장 보기
+              </button>
+            )}
+            {onLater && (
+              <button
+                type="button"
+                onClick={onLater}
+                className="rounded-2xl bg-vermilion px-5 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20"
+              >
+                새 단어 추가하기
+              </button>
+            )}
+          </div>
         </section>
       </div>
     )
@@ -281,7 +397,7 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
                 ))}
               </ul>
             )}
-            <button type="button" onClick={() => void begin()} className="mt-8 rounded-2xl bg-vermilion px-6 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20">
+            <button type="button" onClick={() => void begin()} className="mt-8 rounded-2xl bg-vermilion px-6 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20">
               복습 목록 다시 확인
             </button>
           </div>
@@ -304,9 +420,24 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
           <p className="mt-0.5 text-xs text-ink-faint">오늘의 단어</p>
         </div>
       </div>
-      <div className="mb-6 h-1.5 overflow-hidden rounded-full bg-line/70" aria-label={`복습 진행률 ${progress.current}/${progress.total}`}>
+      <div
+        className="mb-6 h-1.5 overflow-hidden rounded-full bg-line/70"
+        role="progressbar"
+        aria-label="복습 진행률"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={Math.min(progress.current, progress.total)}
+      >
         <div className="h-full rounded-full bg-vermilion transition-all duration-500" style={{ width: `${progressPercent}%` }} />
       </div>
+
+      <p className="sr-only" role="status" aria-live="polite">
+        {sentenceLoading
+          ? '새 예문을 만드는 중입니다.'
+          : sentence
+            ? '예문이 준비되었습니다. 강조된 단어의 뜻을 떠올린 뒤 정답을 확인하세요.'
+            : ''}
+      </p>
 
       <section className="surface-card min-h-[19rem] p-5 sm:p-8 lg:p-10">
         {sentenceLoading && (
@@ -348,7 +479,7 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
                 <button
                   type="button"
                   onClick={() => setKeyDialog({ mode: 'setup' })}
-                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20"
+                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20"
                   data-testid="open-key-setup"
                 >
                   키 연결 가이드 열기
@@ -357,7 +488,7 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
                 <button
                   type="button"
                   onClick={() => setKeyDialog({ mode: 'replace' })}
-                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20"
+                  className="mt-5 rounded-2xl bg-vermilion px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20"
                   data-testid="replace-key"
                 >
                   새 키로 바꾸기
@@ -387,7 +518,8 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
 
       {currentWord && (
         <RatingControls
-          word={currentWord}
+          wordForm={currentWord.word_form}
+          answer={answer}
           revealed={revealed}
           selectedRating={selectedRating}
           onReveal={() => void handleReveal()}
@@ -396,41 +528,44 @@ export function ReviewSession({ onKeyStatusChange, onLater }: ReviewSessionProps
         />
       )}
 
+      <p className="mt-3 hidden text-center text-xs text-ink-faint sm:block" aria-hidden="true">
+        <kbd className="rounded border border-line bg-white px-1.5 py-0.5 font-sans">Space</kbd> 정답 확인
+        <span className="mx-2 text-line">|</span>
+        <kbd className="rounded border border-line bg-white px-1.5 py-0.5 font-sans">1</kbd>–
+        <kbd className="rounded border border-line bg-white px-1.5 py-0.5 font-sans">4</kbd> 평가
+      </p>
+
       {keyDialog && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-6 backdrop-blur-sm sm:py-12">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="key-dialog-title"
-            className="w-full max-w-2xl rounded-[2rem] bg-washi p-5 shadow-card sm:p-7"
-            data-testid="key-dialog"
-          >
-            <div className="mb-5 flex items-start justify-between gap-4">
-              <div>
-                <p className="font-serif-jp text-sm font-semibold tracking-[0.18em] text-vermilion">鍵の設定</p>
-                <h2 id="key-dialog-title" className="mt-1 text-2xl font-bold tracking-tight">
-                  {keyDialog.mode === 'replace' ? '새 Gemini API 키로 바꾸기' : 'Gemini API 키 연결하기'}
-                </h2>
-                <p className="mt-1 text-sm text-ink-muted">연결이 끝나면 지금 단어의 예문을 바로 다시 만들어요.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setKeyDialog(null)}
-                aria-label="닫기"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-muted transition hover:bg-white hover:text-ink focus:outline-none focus:ring-4 focus:ring-forest/15"
-              >
-                ✕
-              </button>
+        <Dialog
+          labelledBy="key-dialog-title"
+          onClose={() => setKeyDialog(null)}
+          testId="key-dialog"
+        >
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <p className="font-serif-jp text-sm font-semibold tracking-[0.18em] text-vermilion">鍵の設定</p>
+              <h2 id="key-dialog-title" className="mt-1 text-2xl font-bold tracking-tight">
+                {keyDialog.mode === 'replace' ? '새 Gemini API 키로 바꾸기' : 'Gemini API 키 연결하기'}
+              </h2>
+              <p className="mt-1 text-sm text-ink-muted">연결이 끝나면 지금 단어의 예문을 바로 다시 만들어요.</p>
             </div>
-            <GeminiKeySetup
-              compact
-              mode={keyDialog.mode}
-              status={keyDialog.mode === 'setup' ? NOT_CONNECTED : undefined}
-              onStatusChange={notifyKeyStatus}
-              onConnected={handleDialogConnected}
-            />
+            <button
+              type="button"
+              onClick={() => setKeyDialog(null)}
+              aria-label="닫기"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-muted transition hover:bg-white hover:text-ink focus:outline-none focus:ring-4 focus:ring-forest/15"
+            >
+              ✕
+            </button>
           </div>
-        </div>
+          <GeminiKeySetup
+            compact
+            mode={keyDialog.mode}
+            status={keyDialog.mode === 'setup' ? NOT_CONNECTED : undefined}
+            onStatusChange={notifyKeyStatus}
+            onConnected={handleDialogConnected}
+          />
+        </Dialog>
       )}
     </div>
   )

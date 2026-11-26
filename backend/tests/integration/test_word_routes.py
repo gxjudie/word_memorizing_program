@@ -9,6 +9,7 @@ depend on the real database or a live auth flow.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -149,3 +150,131 @@ def test_list_returns_collection_in_order(client: TestClient) -> None:
     assert listing.status_code == 200
     forms = [w["word_form"] for w in listing.json()]
     assert forms == ["食べる", "飲む"]
+
+
+# --- Editing (PATCH /api/words/{id}) ------------------------------------------
+
+
+def _create(client: TestClient, word_form: str, reading: str, meaning: str) -> dict:
+    resp = client.post(
+        "/api/words",
+        json={"word_form": word_form, "reading": reading, "meaning": meaning},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_update_word_changes_fields_and_keeps_schedule(
+    client: TestClient, db_session: Session
+) -> None:
+    """Fixing a typo updates the text but must not move the card's schedule."""
+    created = _create(client, "食べる", "たべる", "to eat")
+    entry = db_session.get(WordEntry, created["id"])
+    assert entry is not None
+    entry.ease_factor = 2.7
+    entry.interval_days = 12
+    entry.repetitions = 4
+    db_session.commit()
+    expected_date = entry.next_review_date
+
+    resp = client.patch(
+        f"/api/words/{created['id']}",
+        json={"word_form": "食べる", "reading": "たべる", "meaning": "to eat (fix)"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["meaning"] == "to eat (fix)"
+    db_session.expire_all()
+    updated = db_session.get(WordEntry, created["id"])
+    assert updated is not None
+    assert updated.ease_factor == 2.7
+    assert updated.interval_days == 12
+    assert updated.repetitions == 4
+    assert updated.next_review_date == expected_date
+
+
+def test_update_word_rejects_duplicate_form(client: TestClient) -> None:
+    """Renaming onto another word's form is a 409 and changes nothing."""
+    first = _create(client, "一", "いち", "one")
+    second = _create(client, "二", "に", "two")
+
+    resp = client.patch(
+        f"/api/words/{second['id']}",
+        json={"word_form": "一", "reading": "に", "meaning": "two"},
+    )
+
+    assert resp.status_code == 409, resp.text
+    listing = client.get("/api/words").json()
+    assert [w["word_form"] for w in listing] == ["一", "二"]
+    assert first["reading"] == "いち"
+
+
+def test_update_word_validation_naming_each_field(client: TestClient) -> None:
+    """PATCH uses the same field-exact 400 as POST."""
+    created = _create(client, "一", "いち", "one")
+
+    resp = client.patch(
+        f"/api/words/{created['id']}",
+        json={"word_form": " ", "reading": "", "meaning": "x" * 501},
+    )
+
+    assert resp.status_code == 400, resp.text
+    named = {err["field"] for err in resp.json()["detail"]["errors"]}
+    assert named == {"word_form", "reading", "meaning"}
+
+
+def test_update_unknown_word_returns_404(client: TestClient) -> None:
+    resp = client.patch(
+        "/api/words/does-not-exist",
+        json={"word_form": "一", "reading": "いち", "meaning": "one"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+# --- Deleting (DELETE /api/words/{id}) ----------------------------------------
+
+
+def test_delete_word_removes_record_and_history(
+    client: TestClient, db_session: Session
+) -> None:
+    """DELETE removes the word, its review history, and its sentences."""
+    created = _create(client, "一", "いち", "one")
+    db_session.add(ReviewRecord(word_id=created["id"], rating=3, interval_days=5))
+    db_session.commit()
+
+    resp = client.delete(f"/api/words/{created['id']}")
+
+    assert resp.status_code == 204, resp.text
+    assert client.get("/api/words").json() == []
+    assert db_session.query(ReviewRecord).count() == 0
+
+
+def test_delete_unknown_word_returns_404(client: TestClient) -> None:
+    assert client.delete("/api/words/does-not-exist").status_code == 404
+
+
+def test_delete_another_learners_word_returns_404(
+    client: TestClient, db_session: Session
+) -> None:
+    """A word owned by another account is reported as not found."""
+    other = User(
+        email="other@example.com",
+        oidc_issuer="https://accounts.google.com",
+        oidc_subject="other@example.com",
+    )
+    db_session.add(other)
+    db_session.commit()
+    db_session.refresh(other)
+    foreign = WordEntry(
+        user_id=other.id,
+        word_form="他人",
+        reading="たにん",
+        meaning="another person",
+        next_review_date=date.today(),
+    )
+    db_session.add(foreign)
+    db_session.commit()
+
+    assert client.delete(f"/api/words/{foreign.id}").status_code == 404
+    assert db_session.get(WordEntry, foreign.id) is not None

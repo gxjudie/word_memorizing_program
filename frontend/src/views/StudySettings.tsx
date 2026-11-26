@@ -195,7 +195,7 @@ export function StudySettings() {
             type="submit"
             disabled={!allValid || saving}
             aria-busy={saving}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-6 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-6 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving && (
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />

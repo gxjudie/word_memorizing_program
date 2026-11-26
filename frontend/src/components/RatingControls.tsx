@@ -1,12 +1,14 @@
 import {
-  DIFFICULTY_LABELS,
   DIFFICULTY_ORDER,
   Difficulty,
-  type WordEntryOut,
+  type RevealedWord,
 } from '../api/types'
 
 export interface RatingControlsProps {
-  word: WordEntryOut
+  /** The word form being recalled (used for the answer card's label). */
+  wordForm: string
+  /** The answer revealed by the server, or null before reveal. */
+  answer: RevealedWord | null
   revealed: boolean
   selectedRating?: Difficulty | null
   onReveal: () => void
@@ -30,7 +32,8 @@ const INTERVAL_HINTS: Record<Difficulty, string> = {
 
 /** Reveal the answer, then offer exactly four ordered recall ratings. */
 export function RatingControls({
-  word,
+  wordForm,
+  answer,
   revealed,
   selectedRating,
   onReveal,
@@ -47,18 +50,24 @@ export function RatingControls({
             onClick={onReveal}
             className="w-full rounded-2xl bg-ink px-5 py-3.5 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-forest focus:outline-none focus:ring-4 focus:ring-forest/20 sm:w-auto sm:min-w-56"
             data-testid="reveal-button"
-            aria-label="Reveal answer"
+            aria-keyshortcuts="Space"
           >
             정답 확인하기
           </button>
         </div>
       ) : (
         <div>
-          <div className="relative overflow-hidden rounded-3xl border border-vermilion/15 bg-vermilion-soft/75 p-5 sm:p-6" data-testid="answer">
+          <div className="relative overflow-hidden rounded-3xl border border-vermilion/15 bg-vermilion-soft/75 p-5 sm:p-6" data-testid="answer" aria-label={`${wordForm} 정답`}>
             <div className="absolute right-5 top-3 font-serif-jp text-5xl text-vermilion/10" aria-hidden="true">答</div>
             <p className="text-xs font-bold tracking-[0.16em] text-vermilion">ANSWER</p>
-            <div className="mt-3 font-serif-jp text-lg text-ink-muted" data-testid="answer-reading" lang="ja">{word.reading}</div>
-            <div className="mt-1 text-xl font-bold text-ink sm:text-2xl" data-testid="answer-meaning">{word.meaning}</div>
+            {answer === null ? (
+              <p className="mt-3 text-sm text-ink-muted">정답을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</p>
+            ) : (
+              <>
+                <div className="mt-3 font-serif-jp text-lg text-ink-muted" data-testid="answer-reading" lang="ja">{answer.reading}</div>
+                <div className="mt-1 text-xl font-bold text-ink sm:text-2xl" data-testid="answer-meaning">{answer.meaning}</div>
+              </>
+            )}
           </div>
 
           <div className="mt-6">
@@ -72,7 +81,7 @@ export function RatingControls({
             <div
               className="grid grid-cols-2 gap-2 sm:grid-cols-4"
               role="group"
-              aria-label="Difficulty rating"
+              aria-label="기억 정도 평가"
               data-testid="rating-options"
             >
               {DIFFICULTY_ORDER.map((level) => {
@@ -83,7 +92,7 @@ export function RatingControls({
                     type="button"
                     onClick={() => onRate(level)}
                     aria-pressed={isSelected}
-                    aria-label={`${level}. ${DIFFICULTY_LABELS[level]}`}
+                    aria-keyshortcuts={String(level)}
                     data-testid={`rating-${level}`}
                     data-selected={isSelected}
                     className={

@@ -94,7 +94,7 @@ def test_record_rating_persists_schedule_in_one_transaction(db: Session):
     word = _add_word(db, user.id, "一", today)
 
     service, session_id = _start(db, user.id, today)
-    service.reveal(session_id, word.id)
+    service.reveal(user.id, session_id, word.id)
 
     result = service.record_rating(user.id, session_id, word.id, Difficulty.GOOD)
 
@@ -125,7 +125,7 @@ def test_record_rating_uses_carried_forward_history(db: Session):
     db.commit()
 
     service, session_id = _start(db, user.id, today)
-    service.reveal(session_id, word.id)
+    service.reveal(user.id, session_id, word.id)
 
     result = service.record_rating(user.id, session_id, word.id, Difficulty.GOOD)
 
@@ -168,7 +168,7 @@ def test_reveal_rejects_non_current_word(db: Session):
     service, session_id = _start(db, user.id, today)
 
     with pytest.raises(WordNotCurrentError):
-        service.reveal(session_id, second.id)
+        service.reveal(user.id, session_id, second.id)
 
 
 # --- Invalid rating (Req 8.6) -----------------------------------------------
@@ -181,7 +181,7 @@ def test_record_rating_rejects_out_of_set_rating(db: Session):
     word = _add_word(db, user.id, "一", today)
 
     service, session_id = _start(db, user.id, today)
-    service.reveal(session_id, word.id)
+    service.reveal(user.id, session_id, word.id)
 
     with pytest.raises(InvalidRatingError):
         service.record_rating(user.id, session_id, word.id, 5)
@@ -203,7 +203,7 @@ def test_record_rating_advances_to_next_due_word(db: Session):
     second = _add_word(db, user.id, "二", today, created_at=datetime(2024, 1, 2))
 
     service, session_id = _start(db, user.id, today)
-    service.reveal(session_id, first.id)
+    service.reveal(user.id, session_id, first.id)
 
     result = service.record_rating(
         user.id, session_id, first.id, Difficulty.GOOD
@@ -230,10 +230,10 @@ def test_record_rating_final_word_produces_summary(db: Session):
 
     service, session_id = _start(db, user.id, today)
 
-    service.reveal(session_id, first.id)
+    service.reveal(user.id, session_id, first.id)
     service.record_rating(user.id, session_id, first.id, Difficulty.GOOD)
 
-    service.reveal(session_id, second.id)
+    service.reveal(user.id, session_id, second.id)
     result = service.record_rating(
         user.id, session_id, second.id, Difficulty.VERY_EASY
     )
@@ -257,7 +257,7 @@ def test_record_rating_write_failure_retains_schedule(db: Session):
     word = _add_word(db, user.id, "一", today)
 
     service, session_id = _start(db, user.id, today)
-    service.reveal(session_id, word.id)
+    service.reveal(user.id, session_id, word.id)
 
     # Inject a commit failure to simulate a transactional write error.
     original_commit = db.commit

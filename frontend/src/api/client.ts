@@ -66,6 +66,7 @@ const CODED_ERRORS: ReadonlySet<string> = new Set<
   | ImportErrorCode
   | StudySettingsErrorCode
   | 'logout_failed'
+  | 'session_expired'
 >([
   // Study settings (Req 11.5); without this a coded 422 falls to invalid_rating
   'invalid_study_settings',
@@ -89,6 +90,8 @@ const CODED_ERRORS: ReadonlySet<string> = new Set<
   'gemini_quota_exceeded',
   'generation_timeout',
   'generation_failed',
+  // Review-session lifecycle: the in-progress session outlived its TTL.
+  'session_expired',
   // Gemini key routes (Req 10.6–10.9)
   'invalid_key_format',
   'invalid_key',

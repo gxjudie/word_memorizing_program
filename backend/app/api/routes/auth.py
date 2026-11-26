@@ -45,9 +45,9 @@ from app.schemas.gemini_key import GeminiKeyStatusOut
 from app.services.auth_service import (
     AccountVerificationError,
     AuthConfigurationError,
+    AuthorizationDeniedError,
     AuthPersistenceError,
     AuthStateError,
-    AuthorizationDeniedError,
     TokenExchangeError,
 )
 

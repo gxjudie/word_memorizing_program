@@ -134,4 +134,55 @@ describe('ReviewSession Gemini key states', () => {
     expect(await screen.findByTestId('sentence')).toHaveTextContent('懐かしい歌')
     expect(fetchMock.mock.calls.filter(([path]) => path === SENTENCE_PATH)).toHaveLength(2)
   })
+
+  it('reveals with Space and rates with a digit key', async () => {
+    const fetchMock = stubBackend({
+      [`POST ${SESSION_PATH}`]: [respond(200, { session_id: 's1', due_words: [WORD] })],
+      [`POST ${SENTENCE_PATH}`]: [respond(200, SENTENCE)],
+      'POST /api/review/sessions/s1/words/w1/reveal': [respond(200, { id: 'w1', word_form: '懐かしい', reading: 'なつかしい', meaning: '그리운' })],
+      'POST /api/review/sessions/s1/words/w1/rating': [
+        respond(200, {
+          word_id: 'w1',
+          next_review_date: '2024-01-05',
+          session_complete: true,
+          next_word: null,
+          summary: { total_reviewed: 1, counts_by_rating: { '3': 1 } },
+        }),
+      ],
+    })
+    render(<ReviewSession />)
+    await screen.findByTestId('sentence')
+
+    fireEvent.keyDown(document, { key: ' ' })
+    expect(await screen.findByTestId('answer')).toHaveTextContent('그리운')
+
+    fireEvent.keyDown(document, { key: '3' })
+
+    expect(await screen.findByTestId('summary')).toBeInTheDocument()
+    expect(screen.getByTestId('summary-count-3')).toHaveTextContent('1')
+    const rating = fetchMock.mock.calls.find(([path]) => path.endsWith('/rating'))
+    expect(rating?.[1]?.body).toBe(JSON.stringify({ rating: 3 }))
+  })
+
+  it('stops a stale session with an explanation instead of retrying silently', async () => {
+    stubBackend({
+      [`POST ${SESSION_PATH}`]: [respond(200, { session_id: 's1', due_words: [WORD] })],
+      [`POST ${SENTENCE_PATH}`]: [respond(200, SENTENCE)],
+      'POST /api/review/sessions/s1/words/w1/reveal': [respond(200, { id: 'w1', word_form: '懐かしい', reading: 'なつかしい', meaning: '그리운' })],
+      'POST /api/review/sessions/s1/words/w1/rating': [
+        respond(410, {
+          detail: { code: 'session_expired', message: 'This review session has expired.' },
+        }),
+      ],
+    })
+    render(<ReviewSession />)
+    await screen.findByTestId('sentence')
+
+    fireEvent.click(screen.getByTestId('reveal-button'))
+    await screen.findByTestId('answer')
+    fireEvent.click(screen.getByTestId('rating-3'))
+
+    expect(await screen.findByTestId('session-error')).toHaveTextContent('복습 세션이 만료되었어요')
+    expect(screen.getByRole('button', { name: '다시 시도' })).toBeInTheDocument()
+  })
 })

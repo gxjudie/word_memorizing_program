@@ -160,7 +160,10 @@ def test_user(db_session: Session) -> User:
 
 
 def _make_client(
-    db_session: Session, user: User, sentence_service: SentenceGenerationService
+    db_session: Session,
+    user: User,
+    sentence_service: SentenceGenerationService,
+    review_service: ReviewService | None = None,
 ) -> TestClient:
     app = create_app()
 
@@ -170,6 +173,8 @@ def _make_client(
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[deps.get_current_user] = lambda: user
     app.dependency_overrides[deps.get_sentence_service] = lambda: sentence_service
+    if review_service is not None:
+        app.dependency_overrides[deps.get_review_service] = lambda: review_service
     return TestClient(app)
 
 
@@ -238,6 +243,31 @@ def test_start_session_returns_due_words(db_session, test_user):
     body = resp.json()
     assert "session_id" in body
     assert len(body["due_words"]) == 1
+    word = body["due_words"][0]
+    # The answer must not reach the browser before reveal: only id and form.
+    assert set(word) == {"id", "word_form"}
+
+
+def test_reveal_returns_the_answer(db_session, test_user):
+    word = _add_word(db_session, test_user.id, "食べる", current_study_day())
+    client = _make_client(db_session, test_user, _StubSentenceService())
+    session_id = client.post("/api/review/sessions").json()["session_id"]
+
+    resp = client.post(f"/api/review/sessions/{session_id}/words/{word.id}/reveal")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "id": word.id,
+        "word_form": "食べる",
+        "reading": "よみ",
+        "meaning": "meaning",
+    }
+    # `next_word` is likewise answer-free after advancing.
+    rated = client.post(
+        f"/api/review/sessions/{session_id}/words/{word.id}/rating",
+        json={"rating": 3},
+    )
+    assert rated.status_code == 200, rated.text
 
 
 def test_start_session_no_due_words(db_session, test_user):
@@ -304,6 +334,8 @@ def test_full_flow_reveal_rate_advance_summary(db_session, test_user):
     assert r1.status_code == 200, r1.text
     assert r1.json()["session_complete"] is False
     assert r1.json()["next_word"]["id"] == second_word_id
+    # Advancing to the next word must not pre-send its answer either.
+    assert set(r1.json()["next_word"]) == {"id", "word_form"}
 
     client.post(f"/api/review/sessions/{session_id}/words/{second_word_id}/reveal")
     r2 = client.post(
@@ -346,6 +378,77 @@ def test_unknown_session_returns_404(db_session, test_user):
     client = _make_client(db_session, test_user, _StubSentenceService())
     resp = client.post("/api/review/sessions/does-not-exist/words/x/reveal")
     assert resp.status_code == 404, resp.text
+
+
+# ---- Session expiry and ownership (lifecycle hardening) ----
+
+_SESSION_EXPIRED_TTL = timedelta(seconds=-1)
+
+
+def test_expired_session_returns_410(db_session, test_user):
+    """A session past its TTL is reported as ``410 session_expired``."""
+    w1 = _add_word(db_session, test_user.id, "一", current_study_day())
+    expired = ReviewService(db_session, session_ttl=_SESSION_EXPIRED_TTL)
+    client = _make_client(db_session, test_user, _StubSentenceService(), expired)
+
+    session_id = client.post("/api/review/sessions").json()["session_id"]
+    base = f"/api/review/sessions/{session_id}/words/{w1.id}"
+
+    reveal = client.post(f"{base}/reveal")
+    assert reveal.status_code == 410, reveal.text
+    assert reveal.json()["detail"]["code"] == "session_expired"
+
+    # The session is gone, so a follow-up looks like an unknown session.
+    again = client.post(f"{base}/rating", json={"rating": 3})
+    assert again.status_code == 404, again.text
+
+
+def test_another_learners_session_looks_unknown(db_session, test_user):
+    """One account cannot drive another account's session id."""
+    other = _make_user(db_session, "intruder")
+    _store_key(db_session, other.id)
+    word = _add_word(db_session, test_user.id, "一", current_study_day())
+
+    owner_client = _make_client(db_session, test_user, _StubSentenceService())
+    session_id = owner_client.post("/api/review/sessions").json()["session_id"]
+
+    intruder_client = _make_client(db_session, other, _StubSentenceService())
+    resp = intruder_client.post(
+        f"/api/review/sessions/{session_id}/words/{word.id}/reveal"
+    )
+
+    assert resp.status_code == 404, resp.text
+    # The owner's session is untouched and still usable.
+    assert (
+        owner_client.post(
+            f"/api/review/sessions/{session_id}/words/{word.id}/reveal"
+        ).status_code
+        == 200
+    )
+
+
+def test_sentence_only_for_the_current_word(db_session, test_user):
+    """A sentence cannot be generated for a word that is not being presented."""
+    _add_word(db_session, test_user.id, "一", current_study_day())
+    _add_word(db_session, test_user.id, "二", current_study_day())
+    sentence_service = _StubSentenceService()
+    client = _make_client(db_session, test_user, sentence_service)
+    session = client.post("/api/review/sessions").json()
+    session_id = session["session_id"]
+    current, stale = (word["id"] for word in session["due_words"])
+
+    resp = client.post(f"/api/review/sessions/{session_id}/words/{stale}/sentence")
+
+    assert resp.status_code == 409, resp.text
+    assert sentence_service.user_ids == []  # no provider call was made
+    assert db_session.query(GeneratedSentenceORM).count() == 0
+    # The current word still generates normally.
+    assert (
+        client.post(
+            f"/api/review/sessions/{session_id}/words/{current}/sentence"
+        ).status_code
+        == 200
+    )
 
 
 # ---- Gemini BYOK generation error mapping (Req 4.5, 4.7-4.11) ----

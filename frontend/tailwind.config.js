@@ -7,12 +7,17 @@ export default {
         washi: '#f7f4ee',
         paper: '#fffdf9',
         ink: '#25312e',
-        'ink-muted': '#66716d',
-        'ink-faint': '#8b9490',
+        // Both secondary tones clear WCAG AA (4.5:1) on washi and paper:
+        // ink-muted 6.45:1, ink-faint 4.65:1. ink-faint was #8b9490 (2.84:1).
+        'ink-muted': '#4f5b57',
+        'ink-faint': '#67706c',
         line: '#dedbd2',
         forest: '#315f53',
         'forest-soft': '#e5efeb',
-        vermilion: '#d76b4d',
+        // Deep terracotta: 5.50:1 against white (buttons) and 5.01:1 on washi
+        // (accent text). The previous #d76b4d failed both at 3.44:1 / 3.14:1.
+        vermilion: '#ad4b2b',
+        'vermilion-deep': '#8f3d22',
         'vermilion-soft': '#f9e9e2',
         danger: '#a8493d',
         'danger-soft': '#fbecea',

@@ -24,6 +24,7 @@ dev = [
     "pytest>=8.0",
     "hypothesis>=6.100",
     "httpx>=0.27",
+    "ruff>=0.6",
 ]
 
 [build-system]
@@ -42,6 +43,24 @@ addopts = "-ra"
 markers = [
     "slow: long-running tests such as the Anki import performance checks",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "alembic/versions"]
+
+[tool.ruff.lint]
+# A deliberately narrow, high-signal set: real errors, unused imports/names,
+# import order, and the most common bug patterns. Style-only rules are left out
+# so the existing code base keeps its documented formatting.
+select = ["E4", "E7", "E9", "F", "I", "B"]
+# FastAPI's dependency-injection idiom is a call in a default argument.
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+# The local ``alembic/`` migration directory would otherwise make the installed
+# ``alembic`` package look first-party.
+known-third-party = ["alembic"]
 
 [tool.hypothesis]
 # Property-based tests run a minimum of 100 examples (design requirement).

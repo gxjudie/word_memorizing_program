@@ -34,7 +34,6 @@ export function SentenceRenderer({ sentence, onSelectToken }: SentenceRendererPr
             type="checkbox"
             checked={showFurigana}
             onChange={(event) => setShowFurigana(event.target.checked)}
-            aria-label="Show furigana"
             className="peer sr-only"
           />
           <span className="relative h-5 w-9 rounded-full bg-line transition peer-checked:bg-forest peer-focus-visible:ring-4 peer-focus-visible:ring-forest/20 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition after:content-[''] peer-checked:after:translate-x-4" aria-hidden="true" />
@@ -45,36 +44,40 @@ export function SentenceRenderer({ sentence, onSelectToken }: SentenceRendererPr
       <p className="font-serif-jp text-[1.75rem] leading-[2.1] tracking-wide text-ink sm:text-4xl sm:leading-[2]" data-testid="sentence" lang="ja">
         {sentence.tokens.map((token, index) => {
           const isTarget = token.is_target
-          const className = isTarget
-            ? 'relative mx-0.5 rounded-lg bg-vermilion-soft px-1.5 py-1 font-bold text-vermilion shadow-[inset_0_-2px_0_rgba(215,107,77,0.28)]'
-            : 'mx-0.5 cursor-pointer rounded-lg bg-transparent px-1 py-1 font-normal text-ink transition hover:bg-forest-soft hover:text-forest focus:outline-none focus:ring-4 focus:ring-forest/15'
-          return (
-            <span
-              key={`${token.surface}-${index}`}
-              data-testid={`token-${index}`}
-              data-is-target={isTarget}
-              className={className}
-              role={isTarget ? undefined : 'button'}
-              tabIndex={isTarget ? undefined : 0}
-              onClick={isTarget ? undefined : () => onSelectToken?.(token, index)}
-              onKeyDown={
-                isTarget
-                  ? undefined
-                  : (event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onSelectToken?.(token, index)
-                      }
-                    }
-              }
-            >
+          const content = (
+            <>
               {token.surface}
               {showFurigana && (
                 <span className="ml-0.5 align-middle font-sans text-xs font-medium tracking-normal text-ink-faint sm:text-sm">
                   ({token.reading})
                 </span>
               )}
+            </>
+          )
+          // Non-target tokens are real buttons, not spans with role="button":
+          // they are interactive, so they belong in the tab order and the
+          // accessibility tree natively (Enter/Space work without extra code).
+          return isTarget ? (
+            <span
+              key={`${token.surface}-${index}`}
+              data-testid={`token-${index}`}
+              data-is-target="true"
+              className="relative mx-0.5 rounded-lg bg-vermilion-soft px-1.5 py-1 font-bold text-vermilion shadow-[inset_0_-2px_0_rgba(173,75,43,0.28)]"
+            >
+              {content}
             </span>
+          ) : (
+            <button
+              key={`${token.surface}-${index}`}
+              type="button"
+              data-testid={`token-${index}`}
+              data-is-target="false"
+              aria-label={`${token.surface} 뜻 보기`}
+              onClick={() => onSelectToken?.(token, index)}
+              className="mx-0.5 rounded-lg bg-transparent px-1 py-1 font-normal text-ink transition hover:bg-forest-soft hover:text-forest focus:outline-none focus:ring-4 focus:ring-forest/15"
+            >
+              {content}
+            </button>
           )
         })}
       </p>

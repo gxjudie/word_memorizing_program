@@ -13,6 +13,7 @@ import type {
   Me,
   NoDueWords,
   RatingResult,
+  RevealedWord,
   ReviewSessionOut,
   StudySettings,
   WordEntryOut,
@@ -135,6 +136,28 @@ export function listWords(): Promise<WordEntryOut[]> {
   return request<WordEntryOut[]>('/api/words')
 }
 
+/**
+ * Replace a word's lexical fields. Its review schedule is preserved server-side,
+ * so fixing a typo never moves the card. Rejects with `duplicate` (409) or
+ * `not_found` (404); validation failures carry field-exact errors.
+ */
+export function updateWord(
+  wordId: string,
+  input: WordInput,
+): Promise<WordEntryOut> {
+  return request<WordEntryOut>(`/api/words/${encodeURIComponent(wordId)}`, {
+    method: 'PATCH',
+    body: input,
+  })
+}
+
+/** Delete a word together with its review history and generated sentences. */
+export function deleteWord(wordId: string): Promise<void> {
+  return request<void>(`/api/words/${encodeURIComponent(wordId)}`, {
+    method: 'DELETE',
+  })
+}
+
 // --- Anki deck import (Req 2) -------------------------------------------------
 
 export const IMPORT_PREVIEW_PATH = '/api/words/import/preview'
@@ -215,8 +238,8 @@ export function generateSentence(
 export function revealWord(
   sessionId: string,
   wordId: string,
-): Promise<{ revealed: boolean }> {
-  return request<{ revealed: boolean }>(
+): Promise<RevealedWord> {
+  return request<RevealedWord>(
     `/api/review/sessions/${encodeURIComponent(sessionId)}/words/${encodeURIComponent(wordId)}/reveal`,
     { method: 'POST' },
   )

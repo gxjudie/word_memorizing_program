@@ -4,17 +4,32 @@ import GeminiKeySetup, { maskedHint } from './views/GeminiKeySetup'
 import Login from './views/Login'
 import ReviewSession from './views/ReviewSession'
 import StudySettings from './views/StudySettings'
+import WordList from './views/WordList'
+import ErrorBoundary from './components/ErrorBoundary'
 import { getSessionToken, onSignedOut } from './api/client'
 import { getMe, logout } from './api/endpoints'
 import type { GeminiKeyStatus, Me } from './api/types'
 
-type Tab = 'add' | 'review'
+type Tab = 'review' | 'add' | 'words'
 type View = Tab | 'key' | 'settings'
 
 const NAV_ITEMS: { id: Tab; label: string; eyebrow: string }[] = [
   { id: 'review', label: '오늘의 복습', eyebrow: '復習' },
+  { id: 'words', label: '단어장', eyebrow: '単語帳' },
   { id: 'add', label: '단어 추가', eyebrow: '追加' },
 ]
+
+const VIEWS: readonly View[] = ['review', 'words', 'add', 'key', 'settings']
+
+/**
+ * The view named by the URL hash, so a refresh, a bookmark, and the browser's
+ * back button all land on the same screen. Unknown or empty hashes fall back to
+ * the review screen, the app's home.
+ */
+export function viewFromHash(hash: string = window.location.hash): View {
+  const name = hash.replace(/^#\/?/, '')
+  return (VIEWS as readonly string[]).includes(name) ? (name as View) : 'review'
+}
 
 function readKeyStatus(me: Me | null | undefined): GeminiKeyStatus | null {
   const status = me?.gemini_key
@@ -23,18 +38,40 @@ function readKeyStatus(me: Me | null | undefined): GeminiKeyStatus | null {
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(() => getSessionToken() !== null)
-  const [view, setView] = useState<View>('review')
+  const [view, setView] = useState<View>(() => viewFromHash())
   const [loginNotice, setLoginNotice] = useState(false)
   const [me, setMe] = useState<Me | null>(null)
   const [keyStatus, setKeyStatus] = useState<GeminiKeyStatus | null>(null)
   const [shellReady, setShellReady] = useState(false)
+
+  const navigate = useCallback((next: View) => {
+    setView(next)
+    // pushState keeps the back button working without reloading the SPA. The
+    // hashchange event is not relied on here: it would make every navigation
+    // asynchronous for no benefit.
+    window.history.pushState({ view: next }, '', `#/${next}`)
+  }, [])
+
+  useEffect(() => {
+    // Back/forward, or a hand-edited hash, re-reads the view from the URL.
+    const sync = () => setView(viewFromHash())
+    window.addEventListener('popstate', sync)
+    window.addEventListener('hashchange', sync)
+    if (!window.location.hash) {
+      window.history.replaceState({ view: viewFromHash() }, '', `#/${viewFromHash()}`)
+    }
+    return () => {
+      window.removeEventListener('popstate', sync)
+      window.removeEventListener('hashchange', sync)
+    }
+  }, [])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('auth') === 'success' && getSessionToken()) {
       setAuthed(true)
       setLoginNotice(true)
-      window.history.replaceState({}, '', window.location.pathname)
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash)
       const timer = window.setTimeout(() => setLoginNotice(false), 4500)
       return () => window.clearTimeout(timer)
     }
@@ -67,7 +104,7 @@ export default function App() {
         setMe(loaded)
         const status = readKeyStatus(loaded)
         setKeyStatus(status)
-        if (status && !status.connected) setView('key')
+        if (status && !status.connected && viewFromHash() === 'review') navigate('key')
       })
       .catch(() => {
         /* A 401 is handled by onSignedOut; otherwise continue without /me. */
@@ -78,7 +115,7 @@ export default function App() {
     return () => {
       active = false
     }
-  }, [authed])
+  }, [authed, navigate])
 
   const handleKeyStatusChange = useCallback((status: GeminiKeyStatus) => {
     setKeyStatus(status)
@@ -99,36 +136,43 @@ export default function App() {
   const learnerName = me?.name || me?.email || null
 
   return (
-    <div className="min-h-screen bg-washi text-ink">
+    <div className="flex min-h-screen flex-col bg-washi text-ink">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-ink focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+      >
+        본문으로 건너뛰기
+      </a>
+
       <header className="sticky top-0 z-30 border-b border-line/80 bg-washi/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-3 sm:gap-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-vermilion font-serif-jp text-base font-bold text-white shadow-soft" aria-hidden="true">
               文
             </div>
-            <div className="min-w-0">
+            <div className="hidden min-w-0 sm:block">
               <h1 className="truncate font-serif-jp text-lg font-semibold tracking-tight sm:text-xl">
                 <span className="sr-only">Japanese Vocabulary Trainer — </span>文脈で覚える
               </h1>
-              <p className="hidden text-[11px] font-medium tracking-[0.16em] text-ink-faint sm:block">일본어 문맥 단어장</p>
+              <p className="hidden text-[11px] font-medium tracking-[0.16em] text-ink-faint lg:block">일본어 문맥 단어장</p>
             </div>
           </div>
 
-          <nav className="flex items-center gap-1 rounded-2xl border border-line/80 bg-white/70 p-1" aria-label="주요 메뉴">
+          <nav className="-mx-1 flex items-center gap-1 overflow-x-auto rounded-2xl border border-line/80 bg-white/70 p-1" aria-label="주요 메뉴">
             {NAV_ITEMS.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setView(item.id)}
+                onClick={() => navigate(item.id)}
                 aria-current={view === item.id ? 'page' : undefined}
                 className={
-                  'rounded-xl px-3 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-forest/30 sm:px-4 ' +
+                  'shrink-0 rounded-xl px-3 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-forest/30 sm:px-4 ' +
                   (view === item.id
                     ? 'bg-forest text-white shadow-sm'
                     : 'text-ink-muted hover:bg-forest-soft hover:text-forest')
                 }
               >
-                <span className="mr-1.5 hidden font-serif-jp text-xs opacity-70 sm:inline">{item.eyebrow}</span>
+                <span className="mr-1.5 hidden font-serif-jp text-xs opacity-70 lg:inline">{item.eyebrow}</span>
                 {item.label}
               </button>
             ))}
@@ -137,7 +181,7 @@ export default function App() {
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <button
               type="button"
-              onClick={() => setView('key')}
+              onClick={() => navigate('key')}
               aria-current={view === 'key' ? 'page' : undefined}
               aria-label={`Gemini 키 설정 (${keyConnected ? `연결됨 ${maskedHint(keyStatus?.key_hint ?? null)}` : keyStatus === null ? '확인 중' : '연결 안 됨'})`}
               title="Gemini 키 설정"
@@ -159,7 +203,7 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => setView('settings')}
+              onClick={() => navigate('settings')}
               aria-current={view === 'settings' ? 'page' : undefined}
               aria-label="학습 설정"
               title="학습 설정"
@@ -174,7 +218,7 @@ export default function App() {
             </button>
 
             {learnerName && (
-              <span className="hidden max-w-[12rem] truncate text-sm text-ink-muted lg:inline" title={me?.email} data-testid="header-learner">
+              <span className="hidden max-w-[12rem] truncate text-sm text-ink-muted xl:inline" title={me?.email} data-testid="header-learner">
                 {learnerName}
               </span>
             )}
@@ -201,28 +245,42 @@ export default function App() {
         </div>
       )}
 
-      <main>
+      <main id="main" className="flex-1">
         {!shellReady ? (
           <div className="grid min-h-[60vh] place-items-center" data-testid="shell-loading">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-line border-t-vermilion" aria-label="불러오는 중" />
+            <div className="h-10 w-10 animate-spin rounded-full border-2 border-line border-t-vermilion" role="status" aria-label="불러오는 중" />
           </div>
-        ) : view === 'key' ? (
-          <GeminiKeySetup
-            status={keyStatus}
-            onStatusChange={handleKeyStatusChange}
-            onLater={() => setView('add')}
-            onContinue={() => setView('review')}
-          />
-        ) : view === 'settings' ? (
-          <StudySettings />
-        ) : view === 'review' ? (
-          <ReviewSession onKeyStatusChange={handleKeyStatusChange} onLater={() => setView('add')} />
         ) : (
-          <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
-            <AddWord onGoToReview={() => setView('review')} />
-          </div>
+          <ErrorBoundary>
+            {view === 'key' ? (
+              <GeminiKeySetup
+                status={keyStatus}
+                onStatusChange={handleKeyStatusChange}
+                onLater={() => navigate('add')}
+                onContinue={() => navigate('review')}
+              />
+            ) : view === 'settings' ? (
+              <StudySettings />
+            ) : view === 'review' ? (
+              <ReviewSession
+                onKeyStatusChange={handleKeyStatusChange}
+                onLater={() => navigate('add')}
+                onOpenWords={() => navigate('words')}
+              />
+            ) : view === 'words' ? (
+              <WordList onAdd={() => navigate('add')} />
+            ) : (
+              <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+                <AddWord onGoToReview={() => navigate('review')} onViewWords={() => navigate('words')} />
+              </div>
+            )}
+          </ErrorBoundary>
         )}
       </main>
+
+      <footer className="border-t border-line/70 px-4 py-5 text-center text-xs text-ink-faint">
+        <p>文脈で覚える · 개인 학습용 · 예문은 내 Gemini 키로 생성됩니다.</p>
+      </footer>
     </div>
   )
 }

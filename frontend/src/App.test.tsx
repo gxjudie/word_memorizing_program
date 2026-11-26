@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import App from './App'
 import { getSessionToken, setSessionToken } from './api/client'
 
@@ -121,5 +121,53 @@ describe('App', () => {
       await screen.findByRole('button', { name: 'Google로 계속하기' }),
     ).toBeInTheDocument()
     expect(getSessionToken()).toBeNull()
+  })
+
+  it('navigates to the word list and keeps it in the URL', async () => {
+    setSessionToken('app-session')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string) =>
+        path === '/api/auth/me'
+          ? respond(200, {
+              email: 'learner@example.com',
+              name: null,
+              gemini_key: { connected: true, key_hint: 'abcd' },
+            })
+          : path === '/api/words'
+            ? respond(200, [])
+            : respond(200, { status: 'no_due_words', message: 'No words due' }),
+      ),
+    )
+
+    render(<App />)
+    await screen.findByTestId('no-due')
+
+    const nav = screen.getByRole('navigation', { name: '주요 메뉴' })
+    fireEvent.click(within(nav).getByRole('button', { name: /단어장/ }))
+
+    expect(await screen.findByTestId('word-list-empty')).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/words')
+  })
+
+  it('opens the screen named by a #/words deep link', async () => {
+    window.history.replaceState({}, '', '#/words')
+    setSessionToken('app-session')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string) =>
+        path === '/api/auth/me'
+          ? respond(200, {
+              email: 'learner@example.com',
+              name: null,
+              gemini_key: { connected: true, key_hint: 'abcd' },
+            })
+          : respond(200, []),
+      ),
+    )
+
+    render(<App />)
+
+    expect(await screen.findByTestId('word-list')).toBeInTheDocument()
   })
 })

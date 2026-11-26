@@ -2,16 +2,28 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f7f4ee" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#ad4b2b" />
+    <meta name="color-scheme" content="light" />
     <meta
       name="description"
       content="새로운 일본어 예문과 간격 반복으로 문맥 속 단어를 익히는 학습 도구"
     />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="文脈単語" />
     <title>文脈で覚える · 일본어 문맥 단어장</title>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; font-family: system-ui, sans-serif; line-height: 1.7; color: #25312e;">
+        <h1 style="font-size: 1.5rem;">JavaScript가 필요합니다</h1>
+        <p>이 앱은 브라우저에서 동작하는 학습 도구입니다. JavaScript를 켠 뒤 다시 열어 주세요.</p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

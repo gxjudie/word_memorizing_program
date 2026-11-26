@@ -1,0 +1,28 @@
+{
+  "name": "文脈で覚える · 일본어 문맥 단어장",
+  "short_name": "文脈単語",
+  "description": "새로운 일본어 예문과 간격 반복으로 문맥 속 단어를 익히는 학습 도구",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f4ee",
+  "theme_color": "#ad4b2b",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

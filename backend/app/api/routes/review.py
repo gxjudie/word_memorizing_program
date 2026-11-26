@@ -12,8 +12,11 @@ Endpoints (see the design API table):
   has no stored Gemini_API_Key (checked first, Req 10.1); otherwise start a
   session over the Learner's Due_Words, returning the due list or a no-due
   marker (Req 8.1, 8.5).
-* ``POST /api/review/sessions/{id}/words/{wordId}/reveal`` — mark the current
-  Target_Word revealed; the reveal-before-rate gate (Req 6.5).
+* ``POST /api/review/sessions/{id}/words/{wordId}/reveal`` — return the current
+  Target_Word's reading and meaning and open the reveal-before-rate gate
+  (Req 6.5). This is the only review response that carries an answer: session
+  start and ``next_word`` send the word form alone, so the browser cannot show
+  (or accidentally reveal) an answer the Learner has not asked for.
 * ``POST /api/review/sessions/{id}/words/{wordId}/sentence`` — generate a fresh
   Example_Sentence through Gemini with the Learner's own key, re-validated
   server-side, persist it, and return it. Gemini BYOK failures map to typed
@@ -29,7 +32,6 @@ sentence service and never reaches the client (Req 10.12, 10.16).
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -40,6 +42,7 @@ from app.schemas.review import (
     NoDueWords,
     RatingInput,
     RatingResult,
+    RevealedWordOut,
     ReviewSessionOut,
     SentenceGenerationErrorDetail,
     SentenceGenerationErrorResponse,
@@ -50,6 +53,7 @@ from app.services.review_service import (
     NotRevealedError,
     ReviewService,
     SchedulingNotSavedError,
+    SessionExpiredError,
     SessionNotFoundError,
     WordNotCurrentError,
 )
@@ -103,22 +107,41 @@ _GENERATION_ERRORS: dict[type[SentenceGenerationError], tuple[int, str, str]] = 
 def _generation_http_error(exc: SentenceGenerationError) -> HTTPException:
     """Map a generation failure to its typed ``{code, message}`` HTTP error.
 
-    An unmapped ``SentenceGenerationError`` subclass falls back to
-    ``generation_failed`` so no provider detail can reach the client.
+    The first matching class in ``_GENERATION_ERRORS`` wins (it is ordered from
+    the most specific subclass to ``GenerationError``). An unmapped
+    ``SentenceGenerationError`` subclass falls back to ``generation_failed`` so
+    no provider detail can reach the client.
     """
-    for exc_type, (status_code, code, message) in _GENERATION_ERRORS.items():
-        if isinstance(exc, exc_type):
-            break
-    else:
-        status_code, code, message = _GENERATION_ERRORS[GenerationError]
+    matched = next(
+        (exc_type for exc_type in _GENERATION_ERRORS if isinstance(exc, exc_type)),
+        GenerationError,
+    )
+    status_code, code, message = _GENERATION_ERRORS[matched]
     detail = SentenceGenerationErrorDetail(code=code, message=message)
     return HTTPException(status_code=status_code, detail=detail.model_dump())
 
 
-class RevealResponse(BaseModel):
-    """Acknowledges that the current Target_Word has been revealed."""
+# A session that outlived its TTL cannot be resumed safely (its session date is
+# stale), so the client is told to start a fresh one instead of retrying.
+_SESSION_EXPIRED = {
+    "code": "session_expired",
+    "message": "This review session has expired. Start a new session.",
+}
 
-    revealed: bool = True
+
+def _session_expired_error() -> HTTPException:
+    """Map an expired session to ``410 session_expired``."""
+    return HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=_SESSION_EXPIRED,
+    )
+
+
+def _unknown_session_error() -> HTTPException:
+    """Map an unknown or unowned session to the same ``404``."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail="Unknown review session"
+    )
 
 
 @router.post(
@@ -151,7 +174,7 @@ def start_session(
 
 @router.post(
     "/sessions/{session_id}/words/{word_id}/reveal",
-    response_model=RevealResponse,
+    response_model=RevealedWordOut,
     summary="Reveal the current word's answer",
 )
 def reveal(
@@ -159,25 +182,27 @@ def reveal(
     word_id: str,
     user: CurrentUser,
     service: ReviewService = Depends(get_review_service),
-) -> RevealResponse:
-    """Mark the current Target_Word's answer revealed (Req 6.5 gate).
+) -> RevealedWordOut:
+    """Return the current Target_Word's reading and meaning (Req 6.5 gate).
+
+    This is the only review route that returns the answer. It also flips the
+    session's reveal flag, which is the precondition for rating.
 
     Raises:
         HTTPException: ``404`` if the session is unknown; ``409`` if the word is
-            not the one currently presented.
+            not the one currently presented; ``410`` if the session expired.
     """
     try:
-        service.reveal(session_id, word_id)
-    except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown review session"
-        ) from exc
+        return service.reveal(user.id, session_id, word_id)
+    except SessionExpiredError:
+        raise _session_expired_error() from None
+    except SessionNotFoundError:
+        raise _unknown_session_error() from None
     except WordNotCurrentError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Word is not the current word in this session",
         ) from exc
-    return RevealResponse()
 
 
 def _latest_previous_sentence(
@@ -244,13 +269,21 @@ async def generate_sentence(
             or ``502 generation_failed`` (4.10, 4.11). Nothing is persisted
             and the Target_Word stays current and unrated.
     """
-    # Confirm the session exists (surface a 404 rather than a vague error).
+    # Confirm the session is live and owned by the caller, and that this word
+    # is the one currently presented. A sentence may only be generated for the
+    # current Target_Word, so a stale word id cannot be used to spend the
+    # Learner's Gemini quota on cards that are not being reviewed.
     try:
-        service._get_session(session_id)
-    except SessionNotFoundError as exc:
+        current_word_id = service.current_word_id(user.id, session_id)
+    except SessionExpiredError:
+        raise _session_expired_error() from None
+    except SessionNotFoundError:
+        raise _unknown_session_error() from None
+    if current_word_id != word_id:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown review session"
-        ) from exc
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Word is not the current word in this session",
+        )
 
     word = db.execute(
         select(WordEntry).where(
@@ -297,16 +330,16 @@ def record_rating(
     """Record a Difficulty_Rating, schedule, persist, and advance (Req 6, 7, 8).
 
     Raises:
-        HTTPException: ``404`` unknown session; ``409`` word not current or not
-            revealed (Req 6.5); ``400`` out-of-set rating (Req 8.6); ``500``
-            when the scheduling write fails (Req 7.5).
+        HTTPException: ``404`` unknown session; ``410`` expired session; ``409``
+            word not current or not revealed (Req 6.5); ``400`` out-of-set rating
+            (Req 8.6); ``500`` when the scheduling write fails (Req 7.5).
     """
     try:
         return service.record_rating(user.id, session_id, word_id, body.rating)
-    except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown review session"
-        ) from exc
+    except SessionExpiredError:
+        raise _session_expired_error() from None
+    except SessionNotFoundError:
+        raise _unknown_session_error() from None
     except NotRevealedError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

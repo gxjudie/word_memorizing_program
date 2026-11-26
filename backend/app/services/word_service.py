@@ -31,7 +31,7 @@ from app.models.word_entry import WordEntry
 from app.schemas.word import WordInput
 from app.services.study_day import current_study_day
 
-__all__ = ["WordService", "DuplicateError"]
+__all__ = ["WordService", "DuplicateError", "WordNotFoundError"]
 
 
 class DuplicateError(Exception):
@@ -47,6 +47,21 @@ class DuplicateError(Exception):
     def __init__(self, word_form: str) -> None:
         self.word_form = word_form
         super().__init__(f"word form already exists: {word_form!r}")
+
+
+class WordNotFoundError(Exception):
+    """Raised when a word id is unknown or belongs to another Learner.
+
+    The two cases are deliberately indistinguishable, so one account cannot
+    probe another account's word ids.
+
+    Attributes:
+        word_id: The word id that was not found for this Learner.
+    """
+
+    def __init__(self, word_id: str) -> None:
+        self.word_id = word_id
+        super().__init__(f"word not found: {word_id!r}")
 
 
 class WordService:
@@ -179,3 +194,78 @@ class WordService:
                 .order_by(WordEntry.created_at)
             ).scalars()
         )
+
+    def get_word(self, user_id: str, word_id: str) -> WordEntry:
+        """Return one owned Word_Entry or raise ``WordNotFoundError``."""
+        entry = self._owned_entry(user_id, word_id)
+        if entry is None:
+            raise WordNotFoundError(word_id)
+        return entry
+
+    def update_word(
+        self,
+        user_id: str,
+        word_id: str,
+        data: WordInput,
+    ) -> WordEntry:
+        """Replace a word's lexical fields, keeping its review schedule.
+
+        The scheduling state (``next_review_date``, ``ease_factor``,
+        ``interval_days``, ``repetitions``) and the review history are left
+        untouched: fixing a typo must not move the card to another day.
+
+        Args:
+            user_id: The owning Learner.
+            word_id: The word to update.
+            data: The already-validated replacement lexical fields.
+
+        Returns:
+            The updated ``WordEntry``.
+
+        Raises:
+            WordNotFoundError: The word is unknown or owned by someone else.
+            DuplicateError: Another word in the same collection already uses the
+                new word form. Nothing is written in that case.
+        """
+        entry = self.get_word(user_id, word_id)
+
+        duplicate = self._db.execute(
+            select(WordEntry).where(
+                WordEntry.user_id == user_id,
+                WordEntry.word_form == data.word_form,
+                WordEntry.id != word_id,
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise DuplicateError(data.word_form)
+
+        entry.word_form = data.word_form
+        entry.reading = data.reading
+        entry.meaning = data.meaning
+        self._db.commit()
+        self._db.refresh(entry)
+        return entry
+
+    def delete_word(self, user_id: str, word_id: str) -> None:
+        """Delete one owned word with its review history and sentences.
+
+        The ORM cascades cover ``review_records`` and ``generated_sentences``;
+        SQLite does not enforce ``ON DELETE CASCADE`` unless the foreign-key
+        pragma is on, so the ORM-level cascade is what keeps local databases
+        consistent.
+
+        Raises:
+            WordNotFoundError: The word is unknown or owned by someone else.
+        """
+        entry = self.get_word(user_id, word_id)
+        self._db.delete(entry)
+        self._db.commit()
+
+    def _owned_entry(self, user_id: str, word_id: str) -> WordEntry | None:
+        """Return the word when ``user_id`` owns it, else ``None``."""
+        return self._db.execute(
+            select(WordEntry).where(
+                WordEntry.id == word_id,
+                WordEntry.user_id == user_id,
+            )
+        ).scalar_one_or_none()

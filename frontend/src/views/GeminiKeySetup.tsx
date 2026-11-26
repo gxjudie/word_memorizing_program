@@ -460,7 +460,7 @@ export function GeminiKeySetup({
           type="submit"
           disabled={verifying || keyValue.length === 0}
           aria-busy={verifying}
-          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {verifying && <Spinner />}
           {verifying ? '확인하는 중…' : '연결 확인'}

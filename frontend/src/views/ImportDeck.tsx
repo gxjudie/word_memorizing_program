@@ -267,7 +267,7 @@ export interface ImportDeckProps {
 const SELECT_CLASS =
   'focus-ring mt-2 w-full rounded-2xl border bg-white px-4 py-3 text-base text-ink shadow-sm transition'
 const PRIMARY_BUTTON =
-  'flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3.5 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-[#c75f43] focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:cursor-wait disabled:translate-y-0 disabled:opacity-60'
+  'flex items-center justify-center gap-2 rounded-2xl bg-vermilion px-5 py-3.5 font-semibold text-white shadow-soft transition hover:-translate-y-0.5 hover:bg-vermilion-deep focus:outline-none focus:ring-4 focus:ring-vermilion/20 disabled:cursor-wait disabled:translate-y-0 disabled:opacity-60'
 const QUIET_BUTTON =
   'rounded-2xl px-5 py-3.5 font-semibold text-ink-muted transition hover:bg-white hover:text-ink focus:outline-none focus:ring-4 focus:ring-forest/15 disabled:opacity-60'
 

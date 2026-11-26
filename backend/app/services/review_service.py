@@ -39,10 +39,11 @@ that reveal-gating (Req 6.5), advance (Req 8.3), and the summary (Req 8.4) need.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -56,28 +57,41 @@ from app.models.user import (
 from app.models.word_entry import WordEntry
 from app.schemas.difficulty import Difficulty
 from app.schemas.review import (
+    DueWordOut,
     NoDueWords,
     RatingResult,
+    RevealedWordOut,
     ReviewSessionOut,
     SessionSummary,
 )
-from app.schemas.word import WordEntryOut
-from app.services.sentence_generation.base import MissingGeminiKeyError
 from app.services.scheduler import (
     EASE_FLOOR,
     ReviewHistoryRecord,
     compute_next_interval,
 )
+from app.services.sentence_generation.base import MissingGeminiKeyError
 
 __all__ = [
     "ReviewService",
     "SessionState",
     "SessionNotFoundError",
+    "SessionExpiredError",
     "WordNotCurrentError",
     "NotRevealedError",
     "InvalidRatingError",
     "SchedulingNotSavedError",
+    "SESSION_TTL",
+    "MAX_SESSIONS",
 ]
+
+# In-progress sessions are transient UI-loop state: they expire after two hours
+# so an abandoned tab cannot keep a stale ``session_date`` (and therefore stale
+# scheduling) alive indefinitely, and so the registry cannot grow without bound.
+SESSION_TTL = timedelta(hours=2)
+
+# Upper bound on retained sessions. When exceeded, the oldest sessions are
+# dropped; a dropped session is reported as expired, never as a server error.
+MAX_SESSIONS = 1000
 
 
 class SessionNotFoundError(Exception):
@@ -94,6 +108,30 @@ class SessionNotFoundError(Exception):
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         super().__init__(f"unknown review session: {session_id!r}")
+
+
+class SessionExpiredError(Exception):
+    """Raised when an in-progress session outlived ``SESSION_TTL``.
+
+    Expired sessions are removed from the registry and are never resumed: the
+    stored ``session_date`` would otherwise age, so ratings would schedule from
+    a stale base date. The client is told to start a fresh session.
+
+    Attributes:
+        session_id: The expired session identifier.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"review session expired: {session_id!r}")
+
+
+class SessionAccessDeniedError(SessionNotFoundError):
+    """Raised when a session belongs to a different Learner.
+
+    Reported exactly like an unknown session so one account cannot probe for
+    another account's session identifiers.
+    """
 
 
 class WordNotCurrentError(Exception):
@@ -229,6 +267,7 @@ class SessionState:
         session_id: Identifier of this session.
         user_id: Owning Learner; rating writes are authorized against it.
         session_date: The date the session was started; the schedule base date.
+        expires_at: Instant after which the session is discarded (``SESSION_TTL``).
         word_ids: Due_Word ids in presentation order (one at a time).
         current_index: Cursor into ``word_ids`` for the current Target_Word.
         revealed: Whether the current word's answer has been revealed (Req 6.5).
@@ -240,6 +279,7 @@ class SessionState:
     user_id: str
     session_date: date
     word_ids: list[str]
+    expires_at: datetime
     current_index: int = 0
     revealed: bool = False
     rated_word_ids: set[str] = field(default_factory=set)
@@ -277,12 +317,17 @@ class ReviewService:
     # a session across calls. Encapsulated here so it can be swapped for a
     # shared/external store without changing the public interface.
     _sessions: dict[str, SessionState] = {}
+    # Guards the registry: FastAPI runs these sync routes in a thread pool, so
+    # concurrent requests can start, advance, and expire sessions at once.
+    _lock = threading.RLock()
 
     def __init__(
         self,
         db: Session,
         *,
         has_gemini_key: Callable[[str], bool] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        session_ttl: timedelta = SESSION_TTL,
     ) -> None:
         """Store the DB session and the optional Gemini key-presence check.
 
@@ -292,9 +337,38 @@ class ReviewService:
                 Gemini_API_Key. The API wiring binds it to the Learner's
                 ``gemini_credentials`` row; session start uses it before due
                 selection (Req 10.1). ``None`` means no check is made.
+            clock: Current instant, injected for tests. Defaults to UTC now.
+            session_ttl: How long an in-progress session may live. Defaults to
+                the module's ``SESSION_TTL``.
         """
         self._db = db
         self._has_gemini_key = has_gemini_key
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._session_ttl = session_ttl
+
+    def _now(self) -> datetime:
+        """Return the current instant as an aware UTC datetime."""
+        now = self._clock()
+        if now.tzinfo is None:
+            return now.replace(tzinfo=timezone.utc)
+        return now.astimezone(timezone.utc)
+
+    def _register(self, state: SessionState) -> None:
+        """Add ``state`` to the registry, dropping expired and excess sessions."""
+        with self._lock:
+            now = self._now()
+            for session_id, existing in list(self._sessions.items()):
+                if existing.expires_at <= now:
+                    del self._sessions[session_id]
+            # Bound the registry: an abandoned tab must not leak memory forever.
+            overflow = len(self._sessions) - MAX_SESSIONS + 1
+            if overflow > 0:
+                oldest = sorted(
+                    self._sessions.items(), key=lambda item: item[1].expires_at
+                )[:overflow]
+                for session_id, _state in oldest:
+                    del self._sessions[session_id]
+            self._sessions[state.session_id] = state
 
     def start_session(
         self,
@@ -394,46 +468,98 @@ class ReviewService:
             user_id=user_id,
             session_date=day,
             word_ids=[word.id for word in words],
+            expires_at=self._now() + self._session_ttl,
         )
-        self._sessions[session_id] = state
+        self._register(state)
 
         return ReviewSessionOut(
             session_id=session_id,
-            due_words=[WordEntryOut.model_validate(word) for word in words],
+            due_words=[DueWordOut.model_validate(word) for word in words],
         )
 
-    def _get_session(self, session_id: str) -> SessionState:
-        """Return the registered session state or raise ``SessionNotFoundError``.
-
-        Helper for the rating/advance logic added in task 7.2.
-        """
-        state = self._sessions.get(session_id)
-        if state is None:
-            raise SessionNotFoundError(session_id)
-        return state
-
-    def reveal(self, session_id: str, word_id: str) -> None:
-        """Mark the current Target_Word's answer as revealed (Req 6.5 gate).
-
-        Reveal is the precondition for rating: it flips the session's reveal
-        flag so a subsequent ``record_rating`` is allowed. Only the word that is
-        currently presented may be revealed — one word is current at a time
-        (Req 8.2).
+    def _get_session(
+        self,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> SessionState:
+        """Return the live session state, enforcing expiry and ownership.
 
         Args:
             session_id: The session being driven.
-            word_id: The word to reveal; must be the current Target_Word.
+            user_id: The Learner making the request. When given, a session that
+                belongs to another Learner is reported exactly like an unknown
+                one (``SessionNotFoundError``), so session ids cannot be probed.
 
         Raises:
-            SessionNotFoundError: If ``session_id`` is unknown.
-            WordNotCurrentError: If ``word_id`` is not the current word.
+            SessionNotFoundError: ``session_id`` is unknown, already completed,
+                or owned by another Learner.
+            SessionExpiredError: The session outlived ``SESSION_TTL``; it is
+                removed from the registry and must be restarted.
         """
-        state = self._get_session(session_id)
+        with self._lock:
+            state = self._sessions.get(session_id)
+            if state is None:
+                raise SessionNotFoundError(session_id)
+            if state.expires_at <= self._now():
+                del self._sessions[session_id]
+                raise SessionExpiredError(session_id)
+            if user_id is not None and state.user_id != user_id:
+                raise SessionAccessDeniedError(session_id)
+            return state
+
+    def current_word_id(self, user_id: str, session_id: str) -> str | None:
+        """Return the Target_Word currently presented to ``user_id``.
+
+        Public seam for the sentence route, which needs the session to exist,
+        belong to the caller, and still be live before it calls a provider.
+
+        Raises:
+            SessionNotFoundError: Unknown session, or one owned by someone else.
+            SessionExpiredError: The session outlived ``SESSION_TTL``.
+        """
+        return self._get_session(session_id, user_id=user_id).current_word_id
+
+    def reveal(self, user_id: str, session_id: str, word_id: str) -> RevealedWordOut:
+        """Reveal the current Target_Word and return its answer (Req 6.5 gate).
+
+        Reveal is the precondition for rating and the only place the answer is
+        handed to the client: it flips the session's reveal flag so a subsequent
+        ``record_rating`` is allowed, and returns the reading and meaning for
+        the word that is currently presented (Req 8.2).
+
+        Args:
+            user_id: The Learner driving the session; must own it.
+            session_id: The session being driven.
+            word_id: The word to reveal; must be the current Target_Word.
+
+        Returns:
+            The revealed answer as a ``RevealedWordOut``.
+
+        Raises:
+            SessionNotFoundError: If ``session_id`` is unknown or not owned by
+                ``user_id``.
+            SessionExpiredError: If the session outlived ``SESSION_TTL``.
+            WordNotCurrentError: If ``word_id`` is not the current word, or the
+                word no longer exists in this Learner's collection.
+        """
+        state = self._get_session(session_id, user_id=user_id)
         if word_id != state.current_word_id:
             raise WordNotCurrentError(
                 session_id, word_id, state.current_word_id
             )
+        word = self._db.execute(
+            select(WordEntry).where(
+                WordEntry.id == word_id,
+                WordEntry.user_id == user_id,
+            )
+        ).scalar_one_or_none()
+        if word is None:
+            # Deleted between selection and reveal: treat as not-current so the
+            # session cursor and the reveal gate stay unchanged.
+            raise WordNotCurrentError(session_id, word_id, state.current_word_id)
         state.revealed = True
+        return RevealedWordOut.model_validate(word)
 
     def record_rating(
         self,
@@ -477,13 +603,15 @@ class ReviewService:
             either the next Due_Word or the end-of-session summary.
 
         Raises:
-            SessionNotFoundError: If ``session_id`` is unknown.
+            SessionNotFoundError: If ``session_id`` is unknown or owned by
+                another Learner.
+            SessionExpiredError: If the session outlived ``SESSION_TTL``.
             WordNotCurrentError: If ``word_id`` is not the current word.
             InvalidRatingError: If ``rating`` is outside {1, 2, 3, 4} (Req 8.6).
             NotRevealedError: If the current word was not revealed (Req 6.5).
             SchedulingNotSavedError: If the scheduling write fails (Req 7.5).
         """
-        state = self._get_session(session_id)
+        state = self._get_session(session_id, user_id=user_id)
 
         # One word is current at a time (Req 8.2): reject a stale/other word so
         # the current word is retained unchanged.
@@ -581,7 +709,8 @@ class ReviewService:
 
         if state.is_complete:
             # Final word rated: produce the end-of-session summary (Req 8.4).
-            self._sessions.pop(session_id, None)
+            with self._lock:
+                self._sessions.pop(session_id, None)
             summary = SessionSummary(
                 total_reviewed=len(state.rated_word_ids),
                 counts_by_rating=dict(state.counts_by_rating),
@@ -594,13 +723,18 @@ class ReviewService:
             )
 
         # More Due_Words remain: advance to the next one (Req 8.3).
-        next_word = self._db.get(WordEntry, state.current_word_id)
+        next_word = self._db.execute(
+            select(WordEntry).where(
+                WordEntry.id == state.current_word_id,
+                WordEntry.user_id == user_id,
+            )
+        ).scalar_one_or_none()
         return RatingResult(
             word_id=word_id,
             next_review_date=new_next_review_date,
             session_complete=False,
             next_word=(
-                WordEntryOut.model_validate(next_word)
+                DueWordOut.model_validate(next_word)
                 if next_word is not None
                 else None
             ),

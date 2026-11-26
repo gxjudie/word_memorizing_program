@@ -5,6 +5,14 @@ These model the review loop boundary: starting a session returns either a
 nothing is due (Req 8.1, 8.5). Recording a rating takes a ``RatingInput`` and
 yields a ``RatingResult`` that either advances to the next Due_Word or carries
 the ``SessionSummary`` when the final word has been rated (Req 8.3, 8.4).
+
+Answer secrecy at the API boundary
+----------------------------------
+Context-first recall only works if the answer is not already in the browser.
+Starting a session therefore returns ``DueWordOut`` — id and word form only —
+and the reading and meaning arrive from the reveal route as
+``RevealedWordOut`` immediately before the Learner may rate. The client never
+receives the answer of a word it has not revealed.
 """
 
 from datetime import date
@@ -13,7 +21,41 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.difficulty import Difficulty
-from app.schemas.word import WordEntryOut
+
+
+class DueWordOut(BaseModel):
+    """A Due_Word shown before its answer is revealed.
+
+    Deliberately excludes ``reading``, ``meaning``, and scheduling state: the
+    review payload must not carry the answer (see the module docstring).
+
+    Attributes:
+        id: The Word_Entry id.
+        word_form: The Japanese word form, which the learner is recalling.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    word_form: str
+
+
+class RevealedWordOut(BaseModel):
+    """The answer of the current Target_Word, returned by the reveal route.
+
+    Attributes:
+        id: The Word_Entry id.
+        word_form: The Japanese word form.
+        reading: The kana reading.
+        meaning: The Learner's gloss/meaning.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    word_form: str
+    reading: str
+    meaning: str
 
 
 class ReviewSessionOut(BaseModel):
@@ -22,11 +64,11 @@ class ReviewSessionOut(BaseModel):
     Attributes:
         session_id: Identifier of the created session.
         due_words: The Word_Entries due on or before the session date, in the
-            order they will be presented one at a time.
+            order they will be presented one at a time, without their answers.
     """
 
     session_id: str
-    due_words: list[WordEntryOut]
+    due_words: list[DueWordOut]
 
 
 class NoDueWords(BaseModel):
@@ -77,7 +119,7 @@ class RatingResult(BaseModel):
     word_id: str
     next_review_date: date
     session_complete: bool = False
-    next_word: WordEntryOut | None = None
+    next_word: DueWordOut | None = None
     summary: SessionSummary | None = None
 
 class SentenceGenerationErrorDetail(BaseModel):

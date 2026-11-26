@@ -41,6 +41,22 @@ export interface WordEntryOut {
   created_at: string // ISO datetime
 }
 
+/**
+ * A due word before its answer is revealed. The review payload deliberately
+ * omits reading and meaning so the browser never holds an answer the learner
+ * has not asked for (`RevealedWord` arrives from the reveal route instead).
+ */
+export interface DueWord {
+  id: string
+  word_form: string
+}
+
+/** The answer of the current due word, returned by the reveal route. */
+export interface RevealedWord extends DueWord {
+  reading: string
+  meaning: string
+}
+
 // --- Anki deck import (Req 2) -------------------------------------------------
 
 /** `.apkg` packages vs. Anki plain-text exports (`.txt` / `.tsv`). */
@@ -136,7 +152,7 @@ export interface GeneratedSentence {
 /** A started review session with its due words (Req 8.1, 8.2). */
 export interface ReviewSessionOut {
   session_id: string
-  due_words: WordEntryOut[]
+  due_words: DueWord[]
 }
 
 /** Marker returned when no words are due (Req 8.5). */
@@ -162,7 +178,7 @@ export interface RatingResult {
   word_id: string
   next_review_date: string
   session_complete: boolean
-  next_word: WordEntryOut | null
+  next_word: DueWord | null
   summary: SessionSummary | null
 }
 
@@ -281,6 +297,7 @@ export type ApiErrorCode =
   | 'not_revealed' // rating before reveal (Req 6.5)
   | 'invalid_rating' // out-of-set rating (Req 8.6)
   | 'scheduling_not_saved' // transactional write failed (Req 7.5)
+  | 'session_expired' // 410: the in-progress session outlived its TTL
   | 'not_found'
   | 'conflict'
   | 'unknown'
